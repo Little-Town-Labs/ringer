@@ -301,20 +301,35 @@ source = "fixture"
             ),
             encoding="utf-8",
         )
+        config_path = self.root / "config.toml"
+        config_path.write_text(
+            '[engines.opencode]\nbin = "opencode"\nargs_template = ["{spec}"]\n',
+            encoding="utf-8",
+        )
         real_registry = ROOT / "registry" / "model-identity.toml"
         with mock.patch.object(ringer, "default_model_registry_path", return_value=real_registry), mock.patch.object(
             ringer, "maybe_self_update"
         ):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                self.assertEqual(1, ringer.main(["lint", str(manifest_path)]))
+                self.assertEqual(
+                    1,
+                    ringer.main(["--config", str(config_path), "lint", str(manifest_path)]),
+                )
             self.assertIn("lint: ERROR: grok-task", output.getvalue())
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 self.assertEqual(
                     1,
                     ringer.main(
-                        ["run", str(manifest_path), "--dry-run", "--no-dashboard"]
+                        [
+                            "--config",
+                            str(config_path),
+                            "run",
+                            str(manifest_path),
+                            "--dry-run",
+                            "--no-dashboard",
+                        ]
                     ),
                 )
             self.assertIn("lint: ERROR: grok-task", output.getvalue())
@@ -324,7 +339,13 @@ source = "fixture"
                 self.assertEqual(
                     0,
                     ringer.main(
-                        ["lint", str(manifest_path), "--allow-noncanonical-route"]
+                        [
+                            "--config",
+                            str(config_path),
+                            "lint",
+                            str(manifest_path),
+                            "--allow-noncanonical-route",
+                        ]
                     ),
                 )
             self.assertIn("lint: clean", output.getvalue())
