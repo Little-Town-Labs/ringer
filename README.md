@@ -148,12 +148,18 @@ explicitly is always read — naming it is consent.
 
 ## Lint
 
-Lint checks a manifest for the mistakes that make swarms hard to trust: checks that cannot fail, silent checks, worktree deliverables that disappear, worker commits that die with deleted worktrees, serial fan-out, write collisions, and underspecified specs.
+Lint checks a manifest for the mistakes that make swarms hard to trust: checks that cannot fail, silent checks, worktree deliverables that disappear, worker commits that die with deleted worktrees, serial fan-out, write collisions, underspecified specs, and engine names absent from the selected configuration.
 
 ```bash
 ./ringer.py lint templates/review-swarm/manifest.json
 lint: clean (1 tasks)
 ```
+
+Successful lint is configuration-aware. It loads the same selected config as
+`run` (from `--config`, the environment, or the default path), so `lint: clean`
+means every task engine is configured and model-route checks used that config.
+Unknown-engine diagnostics name the selected config path and available engine
+names without printing the config contents.
 
 `run` and `demo` also print any lint findings as non-blocking warnings after the manifest loads. They teach at the moment of use; they do not stop a run.
 
@@ -392,6 +398,8 @@ Every community PR that lands in main is credited here — that's a project rule
 - [@davekopecek](https://github.com/davekopecek) (Dave Kopecek) — committed the design-reference fixture so the design-token guard runs on every machine (#30)
 - [@snapsynapse](https://github.com/snapsynapse) (Sam Rogers) — graceful shutdown on SIGINT/SIGTERM with worker-tree cleanup and finished state, plus the 14-test end-to-end CLI regression suite (#4)
 - [@mlava](https://github.com/mlava) (Mark Lavercombe) — named setup failures across every diagnostic surface (#37) and `run --baseline`, the no-workers check preflight (#38)
+- [@dudarenok-maker](https://github.com/dudarenok-maker) — configuration-aware lint that rejects unconfigured engine names before dispatch (#105)
+- [@poorlyordered](https://github.com/poorlyordered) — downstream lint and dry-run acceptance coverage, selected-config diagnostics, and readiness documentation
 
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the philosophy and what gets a PR merged fast. The short version: small and scoped, rebased on current main, every claim backed by an executed test. Authorship is always preserved — where a maintainer pushes a mechanical fix to your branch, you remain the commit author.
 

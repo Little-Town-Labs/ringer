@@ -427,12 +427,74 @@ class UnknownEngineLintTests(unittest.TestCase):
         code, output = self.run_lint_cli("no-such-engine-xyz", config_path)
         self.assertEqual(1, code, output)
         self.assertIn("is not configured", output)
+        self.assertIn(str(config_path), output)
 
     def test_cli_lint_stays_clean_on_a_configured_engine(self) -> None:
         config_path = self.write_config("cline")
         code, output = self.run_lint_cli("cline", config_path)
         self.assertEqual(0, code, output)
         self.assertIn("lint: clean", output)
+
+    def run_dry_run_cli(self, engine: str, config_path: Path) -> tuple[int, str]:
+        manifest_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(manifest_dir.cleanup)
+        manifest_path = Path(manifest_dir.name) / "manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "run_name": "engine-dry-run-cli",
+                    "workdir": str(Path(manifest_dir.name) / "work"),
+                    "max_parallel": 1,
+                    "tasks": [
+                        {
+                            "key": "one",
+                            "engine": engine,
+                            "spec": LONG_SPEC,
+                            "check": GOOD_CHECK,
+                            "expect_files": ["output.txt"],
+                            "verified": "the output file exists and contains the expected content",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        previous = os.environ.get("RINGER_NO_SELF_UPDATE")
+        os.environ["RINGER_NO_SELF_UPDATE"] = "1"
+        buffer = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+                code = main(
+                    [
+                        "run",
+                        str(manifest_path),
+                        "--config",
+                        str(config_path),
+                        "--dry-run",
+                        "--no-dashboard",
+                    ]
+                )
+        finally:
+            if previous is None:
+                os.environ.pop("RINGER_NO_SELF_UPDATE", None)
+            else:
+                os.environ["RINGER_NO_SELF_UPDATE"] = previous
+        return code, buffer.getvalue()
+
+    def test_cli_dry_run_rejects_an_unknown_engine_with_selected_config(self) -> None:
+        config_path = self.write_config("cline")
+        code, output = self.run_dry_run_cli("no-such-engine-xyz", config_path)
+        self.assertEqual(1, code, output)
+        self.assertIn("is not configured", output)
+        self.assertIn(str(config_path), output)
+        self.assertNotIn("args_template", output)
+
+    def test_cli_dry_run_accepts_a_configured_engine(self) -> None:
+        config_path = self.write_config("cline")
+        code, output = self.run_dry_run_cli("cline", config_path)
+        self.assertEqual(0, code, output)
+        self.assertIn("DRY RUN", output)
+        self.assertIn(f"Config: {config_path}", output)
 
 
 if __name__ == "__main__":

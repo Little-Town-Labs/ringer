@@ -1823,10 +1823,12 @@ def lint_manifest(
     # `continue`s, so an unknown engine took the quiet path out.
     if config is not None:
         known = ", ".join(sorted(config.engines))
+        selected_config = str(config.path) if config.path is not None else "(safe defaults)"
         for task in manifest.tasks:
             if task.engine not in config.engines:
                 findings.append(
-                    f"ERROR: {task.key}: engine {task.engine!r} is not configured; "
+                    f"ERROR: {task.key}: engine {task.engine!r} is not configured in "
+                    f"{selected_config}; "
                     f"engines available here: {known}."
                 )
 
