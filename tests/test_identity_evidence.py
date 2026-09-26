@@ -15,6 +15,7 @@ from ringer import (
     ArtifactConfig,
     EngineConfig,
     EvalConfig,
+    EvalLogger,
     Manifest,
     RingerRunner,
     VerifyResult,
@@ -148,11 +149,13 @@ access = "OpenRouter API"
                 ],
             }
         )
+        config = self.config(log_path, engine)
         runner = RingerRunner(
             manifest,
-            config=self.config(log_path, engine),
+            config=config,
             identity="tester",
             dashboard_enabled=False,
+            logger=EvalLogger(EvalConfig("jsonl", config.eval.jsonl_path)),
         )
         runtime = runner.runtimes[0]
         runtime.last_worker_command = ["codex", "exec", "-m", "gpt-5.6-sol"]

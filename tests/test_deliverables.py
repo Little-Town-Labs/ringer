@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace as dataclass_replace
 import os
 import posixpath
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -142,6 +144,7 @@ class DeliverableTests(unittest.TestCase):
             self.config,
             "test-agent",
             dashboard_enabled=False,
+            logger=ringer.EvalLogger(EvalConfig("jsonl", self.config.eval.jsonl_path)),
         )
 
     def runtime_for(self, task: TaskSpec, *, worktrees: bool = False) -> tuple[RingerRunner, TaskRuntime]:
@@ -254,6 +257,86 @@ class DeliverableTests(unittest.TestCase):
         deliverables = state["tasks"][0]["deliverables"]
         self.assertEqual("site-final.html", deliverables[0]["name"])
         self.assertTrue(Path(deliverables[0]["path"]).exists())
+
+    def test_real_worktree_cleanup_preserves_html_and_report_and_headless_library(self) -> None:
+        repo = self.root / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "README.md").write_text("base\\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+             "commit", "-qm", "base"], check=True,
+        )
+        task = TaskSpec(
+            key="task-one",
+            spec=(
+                "from pathlib import Path; "
+                "Path('site-final.html').write_text('<h1>worker page</h1>'); "
+                "Path('report.html').write_text('<p>worker report</p>')"
+            ),
+            check="test -s site-final.html",
+            engine="mock",
+            expect_files=("site-final.html",),
+        )
+        self.config = dataclass_replace(
+            self.config, artifact=dataclass_replace(self.artifact, enabled=False)
+        )
+        manifest_obj = {
+            "run_name": "Cleanup Run",
+            "workdir": str(self.workdir),
+            "repo": str(repo),
+            "worktrees": True,
+            "max_parallel": 1,
+            "tasks": [{"key": task.key, "spec": task.spec, "check": task.check,
+                       "engine": task.engine, "expect_files": list(task.expect_files)}],
+        }
+        runner = RingerRunner(
+            Manifest.from_obj(manifest_obj), self.config, "test-agent", dashboard_enabled=False,
+            logger=ringer.EvalLogger(EvalConfig("jsonl", self.config.eval.jsonl_path)),
+        )
+
+        self.assertEqual(0, asyncio.run(runner.run()))
+
+        self.assertFalse(runner.runtimes[0].taskdir.exists())
+        state = json.loads(runner.state_writer.path.read_text(encoding="utf-8"))
+        task_state = state["tasks"][0]
+        rescued = Path(task_state["deliverables"][0]["path"])
+        self.assertEqual("<h1>worker page</h1>", rescued.read_text(encoding="utf-8"))
+        report_path = Path(task_state["report_paths"]["report.html"])
+        self.assertEqual("<p>worker report</p>", report_path.read_text(encoding="utf-8"))
+        library = json.loads((self.state_dir / "artifacts" / "library.json").read_text())
+        entry = library["artifacts"]["Cleanup Run"]
+        self.assertIsNone(entry["live_path"])
+        self.assertIsNone(entry["versions"][0]["path"])
+        self.assertIsNone(entry["versions"][0]["report_path"])
+        self.assertEqual(rescued, Path(entry["versions"][0]["deliverables"][0]["path"]))
+
+    def test_headless_worktree_run_keeps_html_deliverable_and_json_evidence(self) -> None:
+        task = TaskSpec(
+            key="task-one",
+            spec="Create the requested output.",
+            check="true",
+            engine="mock",
+            expect_files=("site-final.html",),
+        )
+        self.config = dataclass_replace(
+            self.config, artifact=dataclass_replace(self.artifact, enabled=False)
+        )
+        runner, runtime = self.runtime_for(task, worktrees=True)
+        (runtime.taskdir / "site-final.html").write_text("<h1>worker page</h1>\n", encoding="utf-8")
+
+        runner._harvest_deliverables_on_pass(runtime)
+        runtime.status = "pass"
+        runner.state_writer.flush()
+
+        state = json.loads(runner.state_writer.path.read_text(encoding="utf-8"))
+        self.assertIsNone(state["artifact_path"])
+        self.assertIsNone(state["live_path"])
+        self.assertEqual(1, len(state["tasks"][0]["deliverables"]))
+        harvested = Path(state["tasks"][0]["deliverables"][0]["path"])
+        shutil.rmtree(runtime.taskdir)
+        self.assertEqual("<h1>worker page</h1>\n", harvested.read_text(encoding="utf-8"))
 
     def test_worktrees_mode_harvest_survives_taskdir_removal(self) -> None:
         task = TaskSpec(

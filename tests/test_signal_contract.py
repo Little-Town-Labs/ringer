@@ -307,7 +307,7 @@ source = "fixture"
             encoding="utf-8",
         )
         real_registry = ROOT / "registry" / "model-identity.toml"
-        with mock.patch.object(ringer, "default_model_registry_path", return_value=real_registry), mock.patch.object(
+        with mock.patch("ringer_core.models.default_model_registry_path", return_value=real_registry), mock.patch.object(
             ringer, "maybe_self_update"
         ):
             output = io.StringIO()

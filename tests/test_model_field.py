@@ -16,6 +16,7 @@ from ringer import (  # noqa: E402
     ArtifactConfig,
     EngineConfig,
     EvalConfig,
+    EvalLogger,
     Manifest,
     RingerRunner,
     TaskSpec,
@@ -251,6 +252,7 @@ class ModelValidationTests(unittest.TestCase):
             config=config,
             identity="tester",
             dashboard_enabled=False,
+            logger=EvalLogger(EvalConfig("jsonl", config.eval.jsonl_path)),
         )
         runtime = runner.runtimes[0]
         runtime.last_worker_command = ["codex", "exec", "-m", "gpt-5.6-sol", "do it"]

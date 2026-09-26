@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import ringer  # noqa: E402
+import ringer_core.presentation as presentation  # noqa: E402
 from ringer import PersistentHudServer, WORKER_LOG_TAIL_BYTES  # noqa: E402
 
 
@@ -37,7 +38,7 @@ class PersistentHudServerTests(unittest.TestCase):
         self.workdir.mkdir(parents=True)
         self.ringside_stub = self.root / "ringside.html"
         self.ringside_stub.write_text("<!doctype html><main>stub ringside page</main>\n", encoding="utf-8")
-        patcher = mock.patch.object(ringer, "RINGSIDE_HTML_PATH", self.ringside_stub)
+        patcher = mock.patch.object(presentation, "RINGSIDE_HTML_PATH", self.ringside_stub)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.seed_state()

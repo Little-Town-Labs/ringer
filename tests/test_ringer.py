@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import signal
@@ -11,6 +13,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -118,6 +121,76 @@ class RingerCliTests(unittest.TestCase):
             timeout=timeout,
             check=False,
         )
+
+    def test_run_and_demo_presentation_default_opt_in_and_disable_precedence(self) -> None:
+        manifest = self.write_manifest(
+            "dispatch",
+            self.manifest(
+                "dispatch",
+                {"key": "one", "spec": "printf done > out.txt", "check": "true", "engine": "write_done"},
+            ),
+        )
+
+        async def fake_run_manifest(*args: object, **kwargs: object) -> int:
+            return 0
+
+        def dispatch(arguments: list[str]) -> dict[str, object]:
+            with (
+                mock.patch.dict(os.environ, {"RINGER_NO_SELF_UPDATE": "1"}),
+                mock.patch.object(ringer, "run_manifest", side_effect=fake_run_manifest) as run_mock,
+                mock.patch.object(ringer, "preflight_engine_bins"),
+                mock.patch.object(ringer, "start_catalog_auto_refresh"),
+                mock.patch.object(ringer, "ensure_hud_running"),
+                mock.patch.object(ringer, "create_demo_manifest", return_value=manifest),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(0, ringer.main(["--config", str(self.config_path), *arguments]))
+            return run_mock.await_args.kwargs
+
+        run_default = dispatch(["run", str(manifest)])
+        demo_default = dispatch(["demo"])
+        run_browser = dispatch(["run", str(manifest), "--browser"])
+        demo_dashboard = dispatch(["demo", "--dashboard"])
+        demo_disabled = dispatch(["demo", "--dashboard", "--no-dashboard"])
+
+        self.assertFalse(run_default["dashboard_enabled"])
+        self.assertFalse(run_default["config"].artifact.enabled)
+        self.assertFalse(demo_default["dashboard_enabled"])
+        self.assertFalse(demo_default["config"].artifact.enabled)
+        self.assertTrue(run_browser["dashboard_enabled"])
+        self.assertTrue(run_browser["force_browser"])
+        self.assertTrue(run_browser["config"].artifact.enabled)
+        self.assertTrue(demo_dashboard["dashboard_enabled"])
+        self.assertTrue(demo_dashboard["config"].artifact.enabled)
+        self.assertFalse(demo_disabled["dashboard_enabled"])
+        self.assertFalse(demo_disabled["config"].artifact.enabled)
+
+    def test_normal_run_is_headless_and_keeps_json_state_and_jsonl(self) -> None:
+        manifest = self.write_manifest(
+            "headless",
+            self.manifest(
+                "headless",
+                {
+                    "key": "one",
+                    "spec": "printf done > out.txt",
+                    "check": "test -s out.txt",
+                    "engine": "write_done",
+                    "expect_files": ["out.txt"],
+                },
+            ),
+        )
+        proc = self.run_ringer(manifest, no_dashboard=False)
+        self.assertEqual(0, proc.returncode, proc.stdout)
+        state = self.read_final_state()
+        self.assertIsNone(state["dashboard_port"])
+        self.assertIsNone(state["artifact_path"])
+        self.assertTrue(self.jsonl_path.is_file())
+        library = json.loads((self.state_dir / "artifacts" / "library.json").read_text())
+        entry = library["artifacts"]["headless"]
+        self.assertIsNone(entry["live_path"])
+        self.assertIsNone(entry["versions"][0]["path"])
+        self.assertIsNone(entry["versions"][0]["report_path"])
+        self.assertEqual([], list((self.state_dir / "artifacts").glob("*.html")))
 
     def read_rows(self, path: Path | None = None) -> list[dict[str, object]]:
         jsonl_path = path or self.jsonl_path
@@ -577,15 +650,11 @@ class RingerCliTests(unittest.TestCase):
 
 
     def test_check_timeout_is_reported_separately_from_worker_timeout(self) -> None:
-        original_timeout = ringer.CHECK_TIMEOUT_S
-        ringer.CHECK_TIMEOUT_S = 1
-        with tempfile.TemporaryDirectory(prefix="ringer-check-timeout-") as tmp:
-            try:
+        with mock.patch("ringer_core.verification.CHECK_TIMEOUT_S", 1):
+            with tempfile.TemporaryDirectory(prefix="ringer-check-timeout-") as tmp:
                 returncode, timed_out, output = asyncio.run(
                     ringer.Verifier._run_check("sleep 5", Path(tmp))
                 )
-            finally:
-                ringer.CHECK_TIMEOUT_S = original_timeout
 
         self.assertTrue(timed_out)
         self.assertNotEqual(returncode, 0)

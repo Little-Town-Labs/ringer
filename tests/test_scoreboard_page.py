@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import ringer  # noqa: E402
+from ringer_core import model_views  # noqa: E402
 from ringer import (  # noqa: E402
     AppConfig,
     ArtifactConfig,
@@ -299,7 +300,7 @@ class ScoreboardPageTests(unittest.TestCase):
 
     def test_html_header_links_watchlist_and_footer_diagnostics(self) -> None:
         generated_at = ringer.datetime.fromisoformat("2026-07-06T12:20:00+00:00")
-        with mock.patch.object(ringer, "datetime", wraps=ringer.datetime) as mocked_datetime:
+        with mock.patch.object(model_views, "datetime", wraps=model_views.datetime) as mocked_datetime:
             mocked_datetime.now.return_value = generated_at
             html = self.render_to(self.root / "scoreboard.html")
 

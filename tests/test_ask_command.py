@@ -147,7 +147,7 @@ class AskCommandTests(unittest.TestCase):
             self.assertLessEqual(report["packet_bytes"], 3_000)
             self.assertFalse((workdir / "answer").exists())
 
-    def test_default_keeps_request_visible_and_run_is_watched(self) -> None:
+    def test_default_keeps_evidence_without_starting_presentation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_root:
             root = Path(temp_root)
             home = root / "home"
@@ -211,19 +211,83 @@ class AskCommandTests(unittest.TestCase):
             state = json.loads(state_files[0].read_text(encoding="utf-8"))
             self.assertIn(request, state["tasks"][0]["spec"])
             self.assertEqual(1, state["tasks"][0]["max_attempts"])
-            self.assertIsInstance(state["dashboard_port"], int)
-            self.assertIsNotNone(state["artifact_path"])
+            self.assertIsNone(state["dashboard_port"])
+            self.assertIsNone(state["artifact_path"])
+            library_path = root / "state" / "artifacts" / "library.json"
+            self.assertTrue(library_path.is_file())
+            library_entry = json.loads(library_path.read_text(encoding="utf-8"))["artifacts"]["one-request"]
+            self.assertIsNone(library_entry["live_path"])
+            self.assertEqual(1, len(library_entry["versions"]))
+            self.assertIsNone(library_entry["versions"][0]["path"])
+            self.assertIsNone(library_entry["versions"][0]["report_path"])
             self.assertIn(
                 request,
                 (root / "runs.jsonl").read_text(encoding="utf-8"),
             )
-            library = json.loads(
-                (root / "state" / "artifacts" / "library.json").read_text(
-                    encoding="utf-8"
-                )
-            )
-            self.assertIn("one-request", library["artifacts"])
             self.assertFalse((workdir / "packet.txt").exists())
+
+    def test_ask_browser_flag_is_explicit_presentation_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_root:
+            root = Path(temp_root)
+            home = root / "home"
+            home.mkdir()
+            worker = root / "answer_worker.py"
+            worker.write_text(
+                "from pathlib import Path\n"
+                "Path('answer.md').write_text('Browser answer', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            config = self.write_config(root, worker, artifact_enabled=True)
+            with mock.patch.object(ringer.Dashboard, "start", return_value=8787):
+                proc = self.run_in_process(
+                    ["ask", "Answer", "--engine", "answer-mock", "--config", str(config),
+                     "--workdir", str(root / "request"), "--browser", "--identity", "ask-browser"],
+                    home=home,
+                )
+            self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+            state = json.loads(next((root / "state" / "runs").glob("*.json")).read_text())
+            self.assertEqual(8787, state["dashboard_port"])
+            self.assertIsNotNone(state["artifact_path"])
+
+
+    def test_ask_explicit_disable_flags_take_precedence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_root:
+            root = Path(temp_root)
+            home = root / "home"
+            home.mkdir()
+            worker = root / "worker.py"
+            worker.write_text("from pathlib import Path\nPath('answer.md').write_text('ok')\n")
+            no_dashboard_root = root / "no-dashboard-case"
+            no_dashboard_root.mkdir()
+            config = self.write_config(no_dashboard_root, worker, artifact_enabled=True)
+
+            no_dashboard_args = [
+                "ask", "Answer", "--engine", "answer-mock", "--config", str(config),
+                "--workdir", str(root / "no-dashboard"), "--dashboard", "--no-dashboard",
+                "--identity", "ask-no-dashboard",
+            ]
+            no_dashboard = self.run_in_process(no_dashboard_args, home=home)
+            self.assertEqual(0, no_dashboard.returncode, no_dashboard.stdout + no_dashboard.stderr)
+            state_path = next((no_dashboard_root / "state" / "runs").glob("*.json"))
+            state = json.loads(state_path.read_text())
+            self.assertIsNone(state["dashboard_port"])
+            self.assertIsNone(state["artifact_path"])
+
+            no_artifact_root = root / "no-artifact-case"
+            no_artifact_root.mkdir()
+            no_artifact_config = self.write_config(no_artifact_root, worker, artifact_enabled=True)
+            artifact_args = [
+                "ask", "Answer", "--engine", "answer-mock", "--config", str(no_artifact_config),
+                "--workdir", str(root / "no-artifact"), "--dashboard", "--no-artifact",
+                "--identity", "ask-no-artifact",
+            ]
+            with mock.patch.object(ringer, "ensure_hud_running"):
+                no_artifact = self.run_in_process(artifact_args, home=home)
+            self.assertEqual(0, no_artifact.returncode, no_artifact.stdout + no_artifact.stderr)
+            state_files = sorted((no_artifact_root / "state" / "runs").glob("*.json"))
+            state = json.loads(state_files[-1].read_text())
+            self.assertIsInstance(state["dashboard_port"], int)
+            self.assertIsNone(state["artifact_path"])
 
     def test_redact_hides_request_metadata_but_preserves_worker_output(self) -> None:
         with tempfile.TemporaryDirectory() as temp_root:

@@ -12,22 +12,23 @@ So split the roles. Your best model writes the specs and reviews the results. A 
 
 One problem: parallel agents lie. "Done" doesn't mean working. Ringer doesn't take the worker's word for anything — it **executes your check command** against the artifact. Pass or fail is decided by running the code, not by reading the agent's summary. Failures retry once with the failure context injected, and every attempt is logged so your setup gets measurably better over time.
 
-And because a swarm you can't see is a swarm you don't trust: **Ringside**, a local web page every run opens automatically, showing every live swarm on your machine — who's running it, what each worker is doing, elapsed time, token burn — in real time, plus a versioned library of what past runs produced.
+For runs you choose to watch, **Ringside** is a local web page showing live swarms on your machine — who's running, what each worker is doing, elapsed time, and token use. Normal runs stay headless; start presentation with `--dashboard`, or use `--browser` for a per-run view.
 
 ## How it works
 
 ```
-manifest.json ──▶ ringer.py ──▶ N parallel workers (codex exec, each in its own dir)
-                      │                │
-                      │                ▼
-                      │         executed checks ── fail ──▶ retry once w/ failure context
-                      │                │
-                      ▼                ▼
-              ~/.ringer/runs/    eval log (JSONL or Postgres)
-                      │
-                      ▼
-              Ringside, in the browser (live, all swarms, all identities)
+manifest.json ──▶ ringer.py CLI ──▶ ringer_core runner ──▶ worker processes
+                         │                  │
+                         │                  ├── executed checks and retry
+                         │                  ├── run state and deliverables
+                         │                  └── JSONL evidence
+                         └── optional presentation (Ringside or per-run browser)
 ```
+
+`ringer.py` remains the command-line composition layer. It is a substantial
+entry point, not a thin shim. The modules under `ringer_core/` own focused
+runtime, configuration, evidence, state, model, and presentation work. See the
+[architecture map](docs/ARCHITECTURE.md) and the [headless evidence decision](docs/decisions/001-headless-local-evidence.md).
 
 ## Quickstart
 
@@ -60,7 +61,7 @@ mkdir -p ~/.config/ringer && cp config.sample.toml ~/.config/ringer/config.toml 
 ./ringer.py demo                                      # 3 real workers, verified end to end
 ```
 
-The demo spawns three Codex workers in parallel, verifies each artifact by executing it, and prints a verdict table — and Ringside, the live dashboard, opens in your browser on its own. If all three say PASS, that's the whole setup.
+The demo spawns three Codex workers in parallel, verifies each artifact by executing it, and prints a verdict table. Runs are headless by default: no browser, dashboard listener, or generated Ringer HTML. Add `--dashboard` or `--browser` when you want presentation. If all three say PASS, that's the whole setup.
 
 Run your own batch:
 
@@ -128,8 +129,9 @@ Repeat `--source` for more files or directories. `--state` takes a small file
 of settled decisions and is preferred over ordinary sources when the packet is
 tight. `--max-packet-bytes` sets the budget (default 16,000). `--dry-run`
 prints the selection report and stops before any model call. `--redact` keeps
-the request out of the run state and eval row. The run appears on Ringside and
-in the artifact library like any other.
+the request out of the run state and eval row. `ask` is headless by default.
+Use `--dashboard` or `--browser` for presentation. Run state and artifact-library
+metadata remain separate from generated HTML.
 
 If everything that matches is too big for the packet, `ask` says so — naming the
 budget you'd need — and stops **before** calling a model. It never sends an
@@ -267,16 +269,17 @@ Each worker process runs with cwd set to `workdir/<task.key>/`. Use absolute pat
 
 ![Ringside in the browser: a run's live results page with per-worker status and verification](docs/ringside.png)
 
-Ringside is a local web page — no install, no account, nothing leaves your machine. Your first run opens it automatically; every later run streams into the same tab:
+Ringside is a local web page — no install, no account, nothing leaves your machine. Runs do not start it unless you opt in:
 
 ```bash
-./ringer.py run manifest.json   # starts Ringside and opens the tab for you
-./ringer.py hud                 # or open it any time → http://127.0.0.1:8700
+./ringer.py run manifest.json --dashboard  # start Ringside for this run
+./ringer.py run manifest.json --browser    # open the per-run browser view
+./ringer.py hud                            # start persistent Ringside → http://127.0.0.1:8700
 ```
 
 The top of the page is the run's live results document: what the job is, a progress bar of rounds, and "The work" — every deliverable each worker filed, with a plain-English line saying what the check proved and the raw check output one click away. Below it, the agents: expand a worker to see the exact brief it was handed, which engine and model are typing, and its live work stream. Past runs stay in a versioned library, and a swarm whose orchestrator *died* without finishing gets its own unmissable state — the failure mode every dashboard forgets.
 
-Multiple swarms at once is the designed-for case: run three batches under three identities and Ringside shows all three, live. `--browser` opens a simpler per-run fallback dashboard, and `--no-dashboard` runs headless.
+Multiple swarms at once is the designed-for case: run three batches under three identities and Ringside shows all three, live. Runs, demos, and asks are headless by default. Use `--dashboard` for Ringside or `--browser` for the per-run browser view. `--no-dashboard` overrides either request, and `--no-artifact` prevents generated HTML while keeping JSON state and deliverables.
 
 A native desktop build (Tauri, under `hud/`) exists as a v0.1.1 prototype; the web dashboard is currently ahead of it — start there.
 
@@ -302,7 +305,7 @@ check_interval_s = 3600
 
 ![Timed, verified, logged](docs/eval-loop.png)
 
-Every worker attempt — pass, fail, timeout, retry — is logged with its spec, engine, duration, token count, and the raw check output. Local JSONL by default; point `[eval.postgres]` at a database to aggregate across machines. Failure rows are the point: they tell you which spec styles, engines, and task shapes actually work, so the swarm gets better on evidence instead of vibes.
+Every worker attempt — pass, fail, timeout, retry — is logged with its spec, engine, duration, token count, and the raw check output. Local JSONL is the default evidence store (`~/.ringer/runs.jsonl`); it works without a dashboard or generated HTML. Point `[eval.postgres]` at a database to aggregate across machines. Failure rows are the point: they tell you which spec styles, engines, and task shapes actually work, so the swarm gets better on evidence instead of vibes. See [Evidence storage](docs/EVIDENCE.md) for append and recovery behavior and the limits of evidence identifiers.
 
 ## Model performance log
 
