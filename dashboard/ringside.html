@@ -1443,10 +1443,6 @@
       return String(value || "artifact").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[.-]+|[.-]+$/g, "") || "artifact";
     }
 
-    function artifactLiveHref(name) {
-      return `/artifacts/live/${encodeURIComponent(sanitizeArtifactName(name))}.html`;
-    }
-
     function artifactPathHref(path) {
       const text = String(path || "").replace(/\\/g, "/");
       const marker = "/artifacts/";
@@ -1467,6 +1463,28 @@
       return state.artifacts.find(item => item.name === state.artifactName) || null;
     }
 
+    function artifactViewChoices(artifact) {
+      const choices = [];
+      if (artifact?.live_path) choices.push({key: "live", path: artifact.live_path});
+      for (const version of artifact?.versions || []) {
+        if (version.path) choices.push({key: version.key, path: version.path, version});
+      }
+      return choices;
+    }
+
+    function artifactViewPath(artifact, viewKey) {
+      if (viewKey === "live") return String(artifact?.live_path || "");
+      const version = artifact?.versions.find(item => item.key === viewKey);
+      return String(version?.path || "");
+    }
+
+    function syncArtifactVersion(artifact) {
+      const choices = artifactViewChoices(artifact);
+      if (!choices.some(choice => choice.key === state.artifactVersion)) {
+        state.artifactVersion = choices[0]?.key || "";
+      }
+    }
+
     function syncArtifactSelection() {
       if (!state.artifacts.length) {
         state.artifactName = "";
@@ -1475,9 +1493,7 @@
       }
       const current = selectedArtifact();
       if (state.artifactManual && current) {
-        if (state.artifactVersion !== "live" && !current.versions.some(version => version.key === state.artifactVersion)) {
-          state.artifactVersion = "live";
-        }
+        syncArtifactVersion(current);
         return;
       }
       if (state.artifactManual && !current) {
@@ -1486,35 +1502,33 @@
       }
       // Only choose FOR the user when nothing is on screen yet. A new live
       // run must never steal the view mid-review (demo-night lesson).
-      if (current) return;
+      if (current) {
+        syncArtifactVersion(current);
+        return;
+      }
       const target = newestArtifact();
       if (target) {
         state.artifactName = target.name;
         state.artifactVersion = "live";
+        syncArtifactVersion(target);
       }
     }
 
     function selectedArtifactTarget() {
       const artifact = selectedArtifact();
       if (!artifact) return null;
-      if (state.artifactVersion !== "live") {
-        const version = artifact.versions.find(item => item.key === state.artifactVersion);
-        if (version) {
-          const src = artifactPathHref(version.path);
-          return {
-            artifact,
-            version,
-            src,
-            key: `${src}|version|${version.key}`
-          };
-        }
-      }
-      const src = artifactLiveHref(artifact.name);
+      const path = artifactViewPath(artifact, state.artifactVersion);
+      if (!path) return null;
+      const version = state.artifactVersion === "live"
+        ? null
+        : artifact.versions.find(item => item.key === state.artifactVersion) || null;
+      const src = artifactPathHref(path);
+      if (!src) return null;
       return {
         artifact,
-        version: null,
+        version,
         src,
-        key: `${src}|current|${artifact.state}`
+        key: `${src}|${version ? `version|${version.key}` : `current|${artifact.state}`}`
       };
     }
 
@@ -1545,24 +1559,36 @@
         return;
       }
 
-      els.artifactStatus.textContent = artifact.state === "live"
+      const views = artifactViewChoices(artifact);
+      const status = artifact.state === "live"
         ? "live — updating"
         : `finished ${relativeAgo(artifact.updated_at)}`;
-      const options = [{
-        value: "live",
-        text: artifact.state === "live"
-          ? "Now — live, updating"
-          : `Now — finished ${relativeAgo(artifact.updated_at)}`
-      }];
+      if (!views.length) {
+        els.artifactStatus.textContent = `${status} · no HTML page available`;
+        syncSelect(els.artifactVersion, [{value: "", text: "No HTML pages available"}], "");
+        els.artifactVersion.disabled = true;
+        return;
+      }
+      els.artifactStatus.textContent = status;
       const total = artifact.versions.length;
-      artifact.versions.forEach((version, index) => {
+      const options = views.map(view => {
+        if (view.key === "live") {
+          return {
+            value: "live",
+            text: artifact.state === "live"
+              ? "Now — live, updating"
+              : `Now — finished ${relativeAgo(artifact.updated_at)}`
+          };
+        }
+        const version = view.version;
         const outcome = version.tasks_fail > 0
           ? `${version.tasks_pass} passed, ${version.tasks_fail} failed`
           : `all ${version.tasks_pass} passed`;
-        options.push({
+        const index = artifact.versions.indexOf(version);
+        return {
           value: version.key,
           text: `Round ${total - index} — ${outcome} · ${formatVersionTime(version.finished_at)}`
-        });
+        };
       });
       syncSelect(els.artifactVersion, options, state.artifactVersion);
       els.artifactVersion.disabled = false;
@@ -1591,7 +1617,8 @@
       const target = selectedArtifactTarget();
       if (!target?.src) {
         state.frameKey = "";
-        showArtifactMessage(state.artifacts.length ? "Artifact path unavailable." : "No artifacts yet.");
+        state.frameContent = "";
+        showArtifactMessage(selectedArtifact() ? "No HTML page is available for this run." : "No artifacts yet.");
         return;
       }
       const isLive = target.artifact.state === "live" && !target.version;

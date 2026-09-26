@@ -20,6 +20,7 @@ from ringer import (  # noqa: E402
     ArtifactConfig,
     EngineConfig,
     EvalConfig,
+    EvalLogger,
     Manifest,
     RESERVED_FIXTURE_MODELS,
     RingerRunner,
@@ -221,11 +222,13 @@ source = "fixture"
                 ],
             }
         )
+        config = self.config(log_path=log_path, engines={"codex": engine})
         runner = RingerRunner(
             manifest,
-            config=self.config(log_path=log_path, engines={"codex": engine}),
+            config=config,
             identity="tester",
             dashboard_enabled=False,
+            logger=EvalLogger(EvalConfig("jsonl", config.eval.jsonl_path)),
         )
         runtime = runner.runtimes[0]
         runtime.last_worker_command = ["codex", "exec", "-c", "model_reasoning_effort=high"]

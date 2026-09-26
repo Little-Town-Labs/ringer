@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import ringer  # noqa: E402
+import ringer_core.runner as runner_module  # noqa: E402
 
 from ringer import (  # noqa: E402
     AppConfig,
@@ -327,9 +328,8 @@ class SteeringConfigAndDriverTests(unittest.TestCase):
                 f"state_dir = {toml_string(root / 'state')}\n",
                 encoding="utf-8",
             )
-            with mock.patch.object(
-                ringer,
-                "load_steering_config",
+            with mock.patch(
+                "ringer_core.config.load_steering_config",
                 side_effect=RuntimeError("broken steering loader"),
             ):
                 config = AppConfig.load(config_path)
@@ -414,7 +414,8 @@ class SteeringObservationTests(unittest.TestCase):
                 }
             )
             config = make_config(root, steering_dir)
-            runner = RingerRunner(manifest, config, "test", dashboard_enabled=False)
+            logger = ringer.EvalLogger(EvalConfig("jsonl", config.eval.jsonl_path))
+            runner = RingerRunner(manifest, config, "test", dashboard_enabled=False, logger=logger)
             runtime = runner.runtimes[0]
             runtime.attempts = 2
             runtime.steering = {
@@ -485,7 +486,8 @@ class SteeringObservationTests(unittest.TestCase):
                 }
             )
             config = make_config(root, blocked)
-            runner = RingerRunner(manifest, config, "test", dashboard_enabled=False)
+            logger = ringer.EvalLogger(EvalConfig("jsonl", config.eval.jsonl_path))
+            runner = RingerRunner(manifest, config, "test", dashboard_enabled=False, logger=logger)
             runtime = runner.runtimes[0]
             runtime.log_path.parent.mkdir(parents=True)
             runner._write_steering_observation(
@@ -526,15 +528,17 @@ class SteeringIntegrationFailOpenTests(unittest.IsolatedAsyncioTestCase):
                     ],
                 }
             )
+            config = make_config(root, steering_dir)
             runner = RingerRunner(
                 manifest,
-                make_config(root, steering_dir),
+                config,
                 "test",
                 dashboard_enabled=False,
+                logger=ringer.EvalLogger(EvalConfig("jsonl", config.eval.jsonl_path)),
             )
             runtime = runner.runtimes[0]
             injected_specs: list[str] = []
-            original_build_worker_command = ringer.build_worker_command
+            original_build_worker_command = runner_module.build_worker_command
 
             def recording_build_worker_command(*args: object, **kwargs: object) -> list[str]:
                 spec = kwargs.get("spec")
@@ -543,7 +547,7 @@ class SteeringIntegrationFailOpenTests(unittest.IsolatedAsyncioTestCase):
                 return original_build_worker_command(*args, **kwargs)  # type: ignore[arg-type]
 
             with mock.patch.object(
-                ringer,
+                runner_module,
                 "build_worker_command",
                 side_effect=recording_build_worker_command,
             ):
@@ -592,17 +596,19 @@ class SteeringIntegrationFailOpenTests(unittest.IsolatedAsyncioTestCase):
                     ],
                 }
             )
+            config = make_config(root, root / "steering")
             runner = RingerRunner(
                 manifest,
-                make_config(root, root / "steering"),
+                config,
                 "test",
                 dashboard_enabled=False,
+                logger=ringer.EvalLogger(EvalConfig("jsonl", config.eval.jsonl_path)),
             )
             runtime = runner.runtimes[0]
             runtime.taskdir.mkdir(parents=True)
 
             with mock.patch.object(
-                ringer,
+                runner_module,
                 "resolve_steering_profile",
                 side_effect=RuntimeError("steering exploded"),
             ):
@@ -638,11 +644,13 @@ class SteeringIntegrationFailOpenTests(unittest.IsolatedAsyncioTestCase):
                     ],
                 }
             )
+            config = make_config(root, root / "steering")
             runner = RingerRunner(
                 manifest,
-                make_config(root, root / "steering"),
+                config,
                 "test",
                 dashboard_enabled=False,
+                logger=ringer.EvalLogger(EvalConfig("jsonl", config.eval.jsonl_path)),
             )
             runtime = runner.runtimes[0]
             runtime.attempts = 1

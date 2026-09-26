@@ -4,12 +4,12 @@
 
 Status: tested
 
-Purpose: verify context-packet selection, one-worker execution, opt-in request
-redaction, Ringside state, artifact registration, and the one-attempt contract.
+Purpose: test context-packet selection, one-worker execution, optional request
+redaction, run state, artifact-library metadata, and the one-attempt contract.
 
 Safe actions:
 
-- Run the unit suite; worker tests use temporary directories and local Python
+- Run the unit suite. Worker tests use temporary directories and local Python
   fixture workers.
 - Run `ask --dry-run` against temporary text or Markdown sources.
 
@@ -21,19 +21,23 @@ Unsafe actions:
 Verification steps:
 
 1. Run `RINGER_NO_SELF_UPDATE=1 python3 -m unittest discover -s tests`.
-2. Create a temporary Markdown source containing a distinctive answer passage.
-3. Run `RINGER_NO_SELF_UPDATE=1 python3 ./ringer.py ask "<question>" --source
-   <temp-file> --dry-run`.
-4. Confirm the packet report names the source passage and stdout says
+2. Create a temporary Markdown source with a distinctive answer passage.
+3. Run `RINGER_NO_SELF_UPDATE=1 python3 ./ringer.py ask "<question>" --source <temp-file> --dry-run`.
+4. Make sure that the packet report names the source passage and stdout says
    `No model call was made.`
+5. For a headless execution smoke test, use the mock engine and temporary
+   configuration. Do not pass `--dashboard` or `--browser`.
 
 Cleanup:
 
 - Remove the temporary source and generated request directory when one was
   supplied explicitly.
+- Keep all state and evidence paths inside the temporary test directory.
 
 Known test-environment constraint:
 
-- Worker tests mock only the dashboard socket bind because restricted test
-  sandboxes can reject local listeners. They assert that the run records a
-  dashboard port and enters the artifact library.
+- Some worker tests mock the dashboard socket bind because restricted test
+  sandboxes can reject local listeners. Tests assert run state and artifact
+  library metadata without requiring generated HTML. The production defaults
+  for `ask` do not start a listener or browser. See [Evidence storage](../docs/EVIDENCE.md)
+  for local evidence behavior.

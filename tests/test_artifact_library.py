@@ -128,6 +128,61 @@ class ArtifactLibraryTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertIn("finished and checked", second)
 
+    def test_failed_html_render_keeps_json_version_without_missing_page_paths(self) -> None:
+        writer = self.writer(runtimes=[self.runtime(status="pass")])
+        with mock.patch.object(writer.artifact_renderer, "render_final_report_html", side_effect=OSError("render failed")):
+            writer.finish()
+
+        state = json.loads(writer.path.read_text(encoding="utf-8"))
+        entry = self.library_entry()
+        self.assertIsNone(state["artifact_path"])
+        self.assertIsNone(state["live_path"])
+        self.assertIsNone(state["report_path"])
+        self.assertEqual(1, len(entry["versions"]))
+        self.assertIsNone(entry["live_path"])
+        self.assertIsNone(entry["versions"][0]["path"])
+        self.assertIsNone(entry["versions"][0]["report_path"])
+
+    def test_partial_status_page_write_records_only_successfully_written_paths(self) -> None:
+        writer = self.writer(runtimes=[self.runtime(status="pass")])
+        atomic = ringer.atomic_write_text
+
+        def fail_live_page(path: Path, text: str) -> None:
+            if path == writer.live_path:
+                raise OSError("live page write failed")
+            atomic(path, text)
+
+        with mock.patch("ringer_core.state.atomic_write_text", side_effect=fail_live_page):
+            writer.finish()
+
+        state = json.loads(writer.path.read_text(encoding="utf-8"))
+        entry = self.library_entry()
+        self.assertEqual(str(writer.artifact_path), state["artifact_path"])
+        self.assertIsNone(state["live_path"])
+        self.assertEqual(str(writer.report_path), state["report_path"])
+        self.assertIsNone(entry["live_path"])
+        self.assertTrue(Path(entry["versions"][0]["path"]).is_file())
+        self.assertTrue(Path(entry["versions"][0]["report_path"]).is_file())
+
+    def test_partial_final_report_write_keeps_version_and_omits_failed_report_path(self) -> None:
+        writer = self.writer(runtimes=[self.runtime(status="pass")])
+        atomic = ringer.atomic_write_text
+
+        def fail_report_page(path: Path, text: str) -> None:
+            if path == writer.report_path:
+                raise OSError("report page write failed")
+            atomic(path, text)
+
+        with mock.patch("ringer_core.state.atomic_write_text", side_effect=fail_report_page):
+            writer.finish()
+
+        state = json.loads(writer.path.read_text(encoding="utf-8"))
+        version = self.library_entry()["versions"][0]
+        self.assertIsNone(state["report_path"])
+        self.assertFalse(state["report_ready"])
+        self.assertTrue(Path(version["path"]).is_file())
+        self.assertIsNone(version["report_path"])
+
     def test_finished_run_appends_version_and_updates_state(self) -> None:
         runtime = self.runtime(status="pass")
         writer = self.writer(runtimes=[runtime])
@@ -193,7 +248,7 @@ class ArtifactLibraryTests(unittest.TestCase):
         before_text = path.read_text(encoding="utf-8")
         before_data = json.loads(before_text)
 
-        with mock.patch("ringer.os.replace", side_effect=OSError("simulated crash")):
+        with mock.patch("ringer_core.state_files.os.replace", side_effect=OSError("simulated crash")):
             with self.assertRaises(OSError):
                 update_artifact_library_live(
                     self.state_dir,

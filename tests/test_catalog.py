@@ -423,7 +423,7 @@ class CatalogTests(unittest.TestCase):
         refresh_openrouter_catalog(snapshot, source=str(old_source))
         before = snapshot.read_text(encoding="utf-8")
 
-        with mock.patch("ringer.atomic_write_json", side_effect=RuntimeError("write stopped")):
+        with mock.patch("ringer_core.catalog.atomic_write_json", side_effect=RuntimeError("write stopped")):
             with self.assertRaisesRegex(RuntimeError, "write stopped"):
                 refresh_openrouter_catalog(snapshot, source=str(new_source))
 
@@ -436,15 +436,16 @@ class CatalogTests(unittest.TestCase):
         self.assertIn(("went_free", "changed"), {(row["kind"], row["id"]) for row in rows})
 
     def test_auto_refresh_throttling_env_and_exception_swallowing(self) -> None:
+        os.environ.pop("RINGER_NO_CATALOG_REFRESH", None)
         snapshot = self.root / "catalog.json"
         snapshot.write_text('{"models":[]}', encoding="utf-8")
-        with mock.patch("ringer.refresh_openrouter_catalog") as refresh:
+        with mock.patch("ringer_core.catalog.refresh_openrouter_catalog") as refresh:
             self.assertIsNone(start_catalog_auto_refresh(snapshot_path=snapshot, print_notice=False))
             refresh.assert_not_called()
 
         stale = time.time() - (25 * 60 * 60)
         os.utime(snapshot, (stale, stale))
-        with mock.patch("ringer.refresh_openrouter_catalog") as refresh:
+        with mock.patch("ringer_core.catalog.refresh_openrouter_catalog") as refresh:
             refresh.return_value = CatalogRefreshResult(
                 path=snapshot,
                 changes_path=catalog_changes_path(snapshot),
@@ -458,18 +459,19 @@ class CatalogTests(unittest.TestCase):
             refresh.assert_called_once()
 
         os.environ["RINGER_NO_CATALOG_REFRESH"] = "1"
-        with mock.patch("ringer.refresh_openrouter_catalog") as refresh:
+        with mock.patch("ringer_core.catalog.refresh_openrouter_catalog") as refresh:
             self.assertIsNone(start_catalog_auto_refresh(snapshot_path=snapshot, print_notice=False))
             refresh.assert_not_called()
         os.environ.pop("RINGER_NO_CATALOG_REFRESH")
 
-        with mock.patch("ringer.refresh_openrouter_catalog", side_effect=RuntimeError("boom")):
+        with mock.patch("ringer_core.catalog.refresh_openrouter_catalog", side_effect=RuntimeError("boom")):
             thread = start_catalog_auto_refresh(snapshot_path=snapshot, print_notice=False)
             self.assertIsNotNone(thread)
             assert thread is not None
             thread.join(timeout=2)
 
     def test_auto_refresh_free_notice_goes_to_stderr(self) -> None:
+        os.environ.pop("RINGER_NO_CATALOG_REFRESH", None)
         snapshot = self.root / "catalog.json"
         snapshot.write_text('{"models":[]}', encoding="utf-8")
         stale = time.time() - (25 * 60 * 60)
@@ -483,7 +485,7 @@ class CatalogTests(unittest.TestCase):
         )
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with mock.patch("ringer.refresh_openrouter_catalog", return_value=result):
+        with mock.patch("ringer_core.catalog.refresh_openrouter_catalog", return_value=result):
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 thread = start_catalog_auto_refresh(snapshot_path=snapshot, print_notice=True)
                 self.assertIsNotNone(thread)

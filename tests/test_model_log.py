@@ -98,11 +98,13 @@ class ModelLogTests(unittest.TestCase):
                     "tasks": [self.task_obj(task_type="code-feature")],
                 }
             )
+            config = self.config(root)
             runner = RingerRunner(
                 manifest,
-                config=self.config(root),
+                config=config,
                 identity="tester",
                 dashboard_enabled=False,
+                logger=EvalLogger(EvalConfig("jsonl", config.eval.jsonl_path)),
             )
             runtime = runner.runtimes[0]
             runner._log_attempt(
