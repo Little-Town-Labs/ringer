@@ -61,6 +61,37 @@ class FakeConnection:
 
 
 class CentralEvidenceTests(unittest.TestCase):
+    def test_connect_can_enable_autocommit(self):
+        driver = mock.Mock()
+        credentials = Credentials("host", 5440, "writer", "test-password", "ringer")
+        with mock.patch.dict(sys.modules, {"psycopg": driver}):
+            self.assertIs(connect(credentials, autocommit=True), driver.connect.return_value)
+        driver.connect.assert_called_once_with(**credentials.connect_kwargs(), autocommit=True)
+
+    def test_resolve_source_host_configured_default_and_empty(self):
+        from ringer_core.central_evidence import resolve_source_host
+
+        with mock.patch("ringer_core.central_evidence.socket.gethostname", return_value="host.example"):
+            self.assertEqual(resolve_source_host("  configured  "), "configured")
+            for configured in (None, "", "  "):
+                with self.subTest(configured=configured):
+                    self.assertEqual(resolve_source_host(configured), "host")
+        for hostname in ("", ".example"):
+            with self.subTest(hostname=hostname), mock.patch(
+                "ringer_core.central_evidence.socket.gethostname", return_value=hostname
+            ):
+                self.assertEqual(resolve_source_host(), "unknown-host")
+
+    def test_stamp_replaces_none_and_empty_timestamp(self):
+        now = datetime(2026, 10, 8, 12, 30, tzinfo=timezone.utc)
+        for logged_at in (None, ""):
+            with self.subTest(logged_at=logged_at):
+                row = {**_row(), "logged_at": logged_at}
+                result = stamp(row, "host", now=lambda: now)
+                self.assertEqual(result["logged_at"], now.isoformat())
+                self.assertEqual(result["attempt_uid"], attempt_uid("host", result))
+                self.assertEqual(row["logged_at"], logged_at)
+
     def test_attempt_uid_golden_vector(self):
         row = {
             "logged_at": "2026-10-07T13:47:30.683590+00:00",

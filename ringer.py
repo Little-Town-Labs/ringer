@@ -22,6 +22,7 @@ if sys.version_info < (3, 12):
         f"ringer requires Python 3.12+; found {sys.version.split()[0]} at {sys.executable}"
     )
 
+from ringer_core import central_evidence
 from ringer_core.steering import (STEERING_STATUSES, STEERING_AUDIENCES, STEERING_RULE_HEADING_RE, SteeringProfile, SteeringRule, _steering_yaml_values, inject_steering_spec, load_steering_profile, parse_steering_profile, resolve_steering_profile, steering_profile_candidates, steering_worker_rules)
 from ringer_core.runner import (DELIVERABLE_MAX_BYTES, FALLBACK_HARVEST_MAX_FILES, FALLBACK_HARVEST_SUFFIXES, SHEPHERD_MODEL, VERIFY_METHOD, RingerRunner, print_summary)
 
@@ -1286,80 +1287,58 @@ class EvalLogger:
         self._conn: Any | None = None
         self._fallback_path = config.jsonl_path
         self._fallback_reason: str | None = None
+        self._fallback_warned = False
         if config.backend == "postgres":
             self._connect()
+            if self._fallback_reason is not None:
+                self._warn_fallback()
 
     def log_attempt(self, row: dict[str, Any]) -> None:
+        postgres = self.config.postgres
+        source_host = central_evidence.resolve_source_host(postgres.source_host if postgres else None)
+        spec_storage = postgres.spec_storage if postgres else "hash"
+        logged_at = row["logged_at"] if "logged_at" in row else datetime.now(timezone.utc).isoformat()
+        log_sink = "jsonl"
         if self._conn is not None:
-            db_row = {
-                key: value
-                for key, value in row.items()
-                if key not in {"model", "reasoning_effort", "task_type", "retry"}
-            }
             try:
-                self._conn.execute(
-                    """
-                    INSERT INTO swarm_runs (
-                        run_id, pattern, task_key, spec, worker_engine, shepherd_model,
-                        verify_method, verdict, duration_ms, worker_tokens, notes, orchestrator
-                    )
-                    VALUES (
-                        %(run_id)s, %(pattern)s, %(task_key)s, %(spec)s, %(worker_engine)s,
-                        %(shepherd_model)s, %(verify_method)s, %(verdict)s, %(duration_ms)s,
-                        %(worker_tokens)s, %(notes)s, %(orchestrator)s
-                    )
-                    """,
-                    db_row,
-                )
-                return
+                central_row = dict(row, logged_at=logged_at, log_sink="postgres", fallback_reason=None)
+                params = central_evidence.to_params(central_row, source_host, spec_storage)
+                self._conn.execute(central_evidence.INSERT_SQL, params)
+                log_sink = "postgres"
             except Exception as exc:
-                self._fallback_reason = f"Supabase insert failed: {exc}"
+                self._fallback_reason = f"postgres insert failed: {exc}"
                 self._close_conn()
-        self._write_jsonl(row)
+                self._warn_fallback()
+        self._write_jsonl(row, logged_at, log_sink)
 
     def close(self) -> None:
         self._close_conn()
 
     def _connect(self) -> None:
-        try:
-            import psycopg  # type: ignore[import-not-found]
-        except Exception as exc:
-            self._fallback_reason = f"psycopg import failed: {exc}"
-            return
         if self.config.postgres is None:
-            self._fallback_reason = "postgres eval config missing"
-            return
-        creds = parse_env_file(self.config.postgres.env_file)
-        required = [
-            "SUPABASE_DB_HOST",
-            "SUPABASE_DB_PORT",
-            "SUPABASE_DB_USER",
-            "SUPABASE_DB_PASSWORD",
-            "SUPABASE_DB_NAME",
-        ]
-        missing = [key for key in required if not creds.get(key)]
-        if missing:
-            self._fallback_reason = f"missing Supabase env keys: {', '.join(missing)}"
+            self._fallback_reason = "postgres config missing"
             return
         try:
-            self._conn = psycopg.connect(
-                host=creds["SUPABASE_DB_HOST"],
-                port=int(creds["SUPABASE_DB_PORT"]),
-                user=creds["SUPABASE_DB_USER"],
-                password=creds["SUPABASE_DB_PASSWORD"],
-                dbname=creds["SUPABASE_DB_NAME"],
-                autocommit=True,
-                connect_timeout=5,
-            )
+            credentials = central_evidence.resolve_credentials(parse_env_file(self.config.postgres.env_file))
+            self._conn = central_evidence.connect(credentials, autocommit=True)
         except Exception as exc:
-            self._fallback_reason = f"Supabase connect failed: {exc}"
+            self._fallback_reason = f"postgres connect failed: {exc}"
 
-    def _write_jsonl(self, row: dict[str, Any]) -> None:
+    def _write_jsonl(self, row: dict[str, Any], logged_at: str, log_sink: str) -> None:
         payload = dict(row)
-        payload["logged_at"] = datetime.now(timezone.utc).isoformat()
-        payload["log_sink"] = "jsonl"
-        payload["fallback_reason"] = self._fallback_reason
+        payload["logged_at"] = logged_at
+        payload["log_sink"] = log_sink
+        payload["fallback_reason"] = None if log_sink == "postgres" else self._fallback_reason
         append_jsonl(self._fallback_path, payload)
+
+    def _warn_fallback(self) -> None:
+        if not self._fallback_warned:
+            print(
+                f"ringer: central evidence write failed ({self._fallback_reason}); "
+                f"attempt rows are still saved to {self._fallback_path}",
+                file=sys.stderr,
+            )
+            self._fallback_warned = True
 
     def _close_conn(self) -> None:
         if self._conn is not None:

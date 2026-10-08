@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import socket
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -35,7 +36,7 @@ def stamp(row: Mapping[str, Any], source_host: str,
           now: Callable[[], datetime] | None = None) -> dict:
     """Copy and stamp a row before sending it to either evidence sink."""
     out = dict(row)
-    if "logged_at" not in out:
+    if out.get("logged_at") in (None, ""):
         timestamp = now() if now is not None else datetime.now(timezone.utc)
         out["logged_at"] = timestamp.astimezone(timezone.utc).isoformat()
     out["source_host"] = source_host
@@ -106,7 +107,14 @@ def resolve_credentials(env: Mapping[str, str]) -> Credentials:
     return Credentials(values["HOST"], port, values["USER"], values["PASSWORD"], values["NAME"])
 
 
-def connect(credentials: Credentials) -> Any:
+def resolve_source_host(configured: str | None = None) -> str:
+    """Use a configured name or the machine's short hostname."""
+    if configured and configured.strip():
+        return configured.strip()
+    return socket.gethostname().split(".", 1)[0] or "unknown-host"
+
+
+def connect(credentials: Credentials, autocommit: bool = False) -> Any:
     """Open a Postgres connection only when the backend is requested."""
     try:
         import psycopg
@@ -114,7 +122,10 @@ def connect(credentials: Credentials) -> Any:
         raise RuntimeError(
             'psycopg is required for the postgres backend; install with pip install "psycopg[binary]"'
         ) from exc
-    return psycopg.connect(**credentials.connect_kwargs())
+    kwargs = credentials.connect_kwargs()
+    if autocommit:
+        kwargs["autocommit"] = autocommit
+    return psycopg.connect(**kwargs)
 
 
 def read_jsonl_rows(path: Path) -> list[dict]:
