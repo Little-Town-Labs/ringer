@@ -1,7 +1,7 @@
 # Plan
 
 ## Evidence
-Targeted source reads of `ringer.py` (EvalLogger, `parse_env_file`, CLI parser/dispatch), `ringer_core/config.py` (`EvalConfig`, `PostgresEvalConfig`, `load_eval_config`), `ringer_core/evidence.py`, `ringer_core/runner.py` (`_log_attempt`), and the tests that touch them. The codebase graph was not used; reads are authoritative, not a claimed graph. Production facts (aegis-prod, schema, roles, Grafana datasource, 323-row backfill) were established and verified in this session and are recorded in spec.md.
+Targeted source reads of `ringer.py` (EvalLogger, `parse_env_file`, CLI parser/dispatch), `ringer_core/config.py` (`EvalConfig`, `PostgresEvalConfig`, `load_eval_config`), `ringer_core/evidence.py`, `ringer_core/runner.py` (`_log_attempt`), and the tests that touch them. The codebase graph was not used; reads are authoritative, not a claimed graph. Production facts (<db-host>, schema, roles, Grafana datasource, 323-row backfill) were established and verified in this session and are recorded in spec.md.
 
 Findings that bound the work:
 - `EvalLogger` lives in `ringer.py` (ADR-001 keeps it there). `log_attempt` writes Postgres **or** JSONL and stamps `logged_at`, `log_sink`, `fallback_reason` only inside `_write_jsonl`, so an identity stamped before both sinks (R3) and dual-write (R10) change its control flow, not just its SQL.
@@ -32,10 +32,10 @@ New module `ringer_core/central_evidence.py` (no import of `ringer`, lazy `psyco
 5. ADR-002 and documentation (T008), then final verification and independent review (T009).
 
 ## Verification
-`RINGER_NO_SELF_UPDATE=1 python3 -m unittest discover -s tests` (expected: one known pre-existing contributor-credit failure, recorded in T001). Unit tests use fake connections. A schema integration test runs only when `RINGER_TEST_PG_DSN` points at a throwaway Postgres (CI skips it); it must never be pointed at aegis-prod. Final CLI smoke uses a mock worker, a temp HOME/state, and a fake or throwaway database. Same-family review is recorded as same-family; at least one review lens should use a different model family.
+`RINGER_NO_SELF_UPDATE=1 python3 -m unittest discover -s tests` (expected: one known pre-existing contributor-credit failure, recorded in T001). Unit tests use fake connections. A schema integration test runs only when `RINGER_TEST_PG_DSN` points at a throwaway Postgres (CI skips it); it must never be pointed at <db-host>. Final CLI smoke uses a mock worker, a temp HOME/state, and a fake or throwaway database. Same-family review is recorded as same-family; at least one review lens should use a different model family.
 
 ## Rollout and rollback
-Nothing changes for installs that do not set `backend = "postgres"` (JSONL stays default). For powerbox2: merge, `pip install psycopg`, set `backend = "postgres"` with `env_file = ~/.ringer/ringer-db.env`, run one task, confirm it appears centrally and locally. Rollback: set `backend = "jsonl"`; the database and local files are unaffected. Central rows already written stay (idempotent, unique key), and the nightly dump covers loss. The aegis-prod database, Grafana datasource, and cron are already live and are not part of any code rollback.
+Nothing changes for installs that do not set `backend = "postgres"` (JSONL stays default). For powerbox2: merge, `pip install psycopg`, set `backend = "postgres"` with `env_file = ~/.ringer/ringer-db.env`, run one task, confirm it appears centrally and locally. Rollback: set `backend = "jsonl"`; the database and local files are unaffected. Central rows already written stay (idempotent, unique key), and the nightly dump covers loss. The <db-host> database, Grafana datasource, and cron are already live and are not part of any code rollback.
 
 ## Risks
 - Dual-write changes observable behavior for current Postgres users (an extra local JSONL row). Mitigation: it is the point of R10; documented in ADR-002.
