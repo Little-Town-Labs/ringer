@@ -305,7 +305,7 @@ check_interval_s = 3600
 
 ![Timed, verified, logged](docs/eval-loop.png)
 
-Every worker attempt — pass, fail, timeout, retry — is logged with its spec, engine, duration, token count, and the raw check output. Local JSONL is the default evidence store (`~/.ringer/runs.jsonl`); it works without a dashboard or generated HTML. Point `[eval.postgres]` at a database to aggregate across machines. Failure rows are the point: they tell you which spec styles, engines, and task shapes actually work, so the swarm gets better on evidence instead of vibes. See [Evidence storage](docs/EVIDENCE.md) for append and recovery behavior and the limits of evidence identifiers.
+Every worker attempt — pass, fail, timeout, retry — is logged with its spec, engine, duration, token count, and the raw check output. Local JSONL is the default evidence store (`~/.ringer/runs.jsonl`); it works without a dashboard or generated HTML. To aggregate across machines, point `[eval.postgres]` at a PostgreSQL database: Ringer then writes every attempt to local JSONL **and** to a shared table, and `ringer.py evidence push` catches up anything that did not reach it. The schema and an operator runbook are in [`scripts/central-evidence/`](scripts/central-evidence/README.md). Failure rows are the point: they tell you which spec styles, engines, and task shapes actually work, so the swarm gets better on evidence instead of vibes. See [Evidence storage](docs/EVIDENCE.md) for append and recovery behavior, the central store, and the limits of evidence identifiers.
 
 ## Model performance log
 
@@ -412,7 +412,7 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the phi
 
 ## Requirements
 
-- Python 3.12+ (stdlib only; `psycopg` needed only for the optional Postgres eval backend)
+- Python 3.12+ (stdlib only; `psycopg` needed only for the optional shared Postgres evidence store, `pip install "psycopg[binary]"`)
   - **Changed:** the supported floor moved from 3.11 to 3.12. CI has only ever run 3.12, so 3.11 was a promise nothing enforced — the honest fix is to state the version we actually test. Today's code still happens to run on 3.11; that is no longer guaranteed, and 3.11 breakage won't be treated as a bug.
 - At least one agent CLI (Codex works out of the box)
 - Rust toolchain, only if you're building Ringside from source
