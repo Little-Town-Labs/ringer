@@ -1,0 +1,8 @@
+{
+  "name": "toy-unchecked",
+  "engine": "scripted",
+  "verify": ["true"],
+  "build": {"model": "scripted", "effort": "low", "brief": "spec.md", "owned": ["toy_out"]},
+  "review": {"lenses": [], "quality_gate": {"model": "scripted", "effort": "low"}},
+  "fix": {"model": "scripted", "effort": "low"}
+}

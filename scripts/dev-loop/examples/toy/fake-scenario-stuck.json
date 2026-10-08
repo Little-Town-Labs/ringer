@@ -1,0 +1,13 @@
+{
+  "tasks": {
+    "T001": {"files": {"toy_out/alpha/result.txt": "alpha finished\n"}},
+    "T002": {"files": {"toy_out/beta/result.txt": "beta finished\n"}},
+    "T003": {"files": {"toy_out/combined/result.txt": "combined draft\n"}}
+  },
+  "gate": {
+    "2-1": {"verdict": "REQUEST CHANGES", "findings": [{"severity": "Required", "title": "Combined result is a draft", "file": "toy_out/combined/result.txt", "line": 1}]},
+    "2-2": {"verdict": "REQUEST CHANGES", "findings": [{"severity": "Required", "title": "Combined result is a draft", "file": "toy_out/combined/result.txt", "line": 1}]},
+    "2-3": {"verdict": "REQUEST CHANGES", "findings": [{"severity": "Required", "title": "Combined result is a draft", "file": "toy_out/combined/result.txt", "line": 1}]}
+  },
+  "fix": {"2-1": {"files": {"toy_out/combined/result.txt": "combined still a draft\n"}}, "2-2": {"files": {"toy_out/combined/result.txt": "combined still a draft\n"}}}
+}

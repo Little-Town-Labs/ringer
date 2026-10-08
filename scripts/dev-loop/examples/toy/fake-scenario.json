@@ -1,0 +1,11 @@
+{
+  "tasks": {
+    "T001": {"files": {"toy_out/alpha/result.txt": "alpha first pass\n"}},
+    "T002": {"files": {"toy_out/beta/result.txt": "beta finished\n"}},
+    "T003": {"files": {"toy_out/combined/result.txt": "alpha and beta combined\n"}}
+  },
+  "gate": {
+    "1-1": {"verdict": "REQUEST CHANGES", "findings": [{"severity": "Required", "title": "Alpha result is a first pass", "file": "toy_out/alpha/result.txt", "line": 1}]}
+  },
+  "fix": {"1-1": {"files": {"toy_out/alpha/result.txt": "alpha final\n"}}}
+}

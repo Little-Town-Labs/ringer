@@ -1,0 +1,208 @@
+schema_version: "1.0"
+workflow:
+  id: "dev-loop"
+  name: "Spec-driven delivery loop"
+  version: "0.2.0"
+  author: "ringer"
+  description: >-
+    Preflight gates, then repeated waves over the ready tasks in tasks.md: build through Ringer in an isolated
+    worktree, verify, review (custom lenses plus the five-axis quality gate), fix confirmed findings for at most two
+    rounds, approve or escalate, mark the tasks done. When no task is left, a whole-feature closeout review runs.
+    It never merges. State lives in tasks.md and the branch, so a run that stops can simply be started again.
+
+inputs:
+  spec_dir:
+    type: string
+    required: true
+    prompt: "Spec directory containing loop.json (for example specs/003-evidence-status-json)"
+  ringer_config:
+    type: string
+    default: ""
+  preflight_verdict:
+    type: string
+    default: ""
+  human_verdict:
+    type: string
+    default: ""
+
+steps:
+  - id: preflight
+    type: shell
+    output_format: json
+    run: "python3 scripts/dev-loop/devloop.py preflight {{ inputs.spec_dir }}"
+
+  - id: preflight-stop
+    type: if
+    condition: "{{ steps.preflight.output.data.hard_stop }}"
+    then:
+      - id: refuse
+        type: shell
+        run: "python3 scripts/dev-loop/devloop.py refuse {{ inputs.spec_dir }}"
+
+  # A failed checklist or analysis gate, or a requested route approval, asks before any worker starts.
+  - id: preflight-gate
+    type: if
+    condition: "{{ steps.preflight.output.data.needs_gate }}"
+    then:
+      - id: preflight-approval
+        type: gate
+        message: "Preflight needs a decision before any worker starts: {{ steps.preflight.output.data.reasons | join('; ') }}"
+        options: [approve, reject]
+        on_reject: abort
+        verdict_input: preflight_verdict
+
+  - id: init
+    type: shell
+    output_format: json
+    run: "python3 scripts/dev-loop/devloop.py init {{ inputs.spec_dir }}"
+
+  # The outer loop: one wave of dependency-ready tasks per iteration, at most 20 waves.
+  - id: waves
+    type: do-while
+    max_iterations: 20
+    condition: "{{ steps.wave-status.output.data.continue }}"
+    steps:
+      - id: next
+        type: shell
+        output_format: json
+        run: "python3 scripts/dev-loop/devloop.py next {{ inputs.spec_dir }}"
+
+      - id: wave
+        type: if
+        condition: "{{ steps.next.output.data.run }}"
+        then:
+          - id: build
+            type: shell
+            timeout: 3600
+            continue_on_error: true
+            run: "scripts/dev-loop/ringer_run.sh build {{ inputs.spec_dir }} '{{ inputs.ringer_config }}'"
+
+          - id: commit-build
+            type: shell
+            output_format: json
+            run: "python3 scripts/dev-loop/devloop.py commit {{ inputs.spec_dir }} 'loop: build'"
+
+          - id: verify0
+            type: shell
+            timeout: 1800
+            continue_on_error: true
+            run: "python3 scripts/dev-loop/devloop.py verify {{ inputs.spec_dir }} verify-0"
+
+          - id: review0
+            type: shell
+            timeout: 3600
+            continue_on_error: true
+            run: "scripts/dev-loop/ringer_run.sh review {{ inputs.spec_dir }} '{{ inputs.ringer_config }}'"
+
+          - id: triage0
+            type: shell
+            output_format: json
+            run: "python3 scripts/dev-loop/devloop.py triage {{ inputs.spec_dir }}"
+
+          - id: fixes
+            type: if
+            condition: "{{ steps.triage0.output.data.need_fix }}"
+            then:
+              - id: fix-loop
+                type: do-while
+                max_iterations: 2
+                condition: "{{ steps.triage.output.data.need_fix }}"
+                steps:
+                  - id: fix
+                    type: shell
+                    timeout: 3600
+                    continue_on_error: true
+                    run: "scripts/dev-loop/ringer_run.sh fix {{ inputs.spec_dir }} '{{ inputs.ringer_config }}'"
+                  - id: commit-fix
+                    type: shell
+                    output_format: json
+                    run: "python3 scripts/dev-loop/devloop.py commit {{ inputs.spec_dir }} 'loop: fix confirmed review findings'"
+                  - id: verify
+                    type: shell
+                    timeout: 1800
+                    continue_on_error: true
+                    run: "python3 scripts/dev-loop/devloop.py verify {{ inputs.spec_dir }} verify-fix"
+                  - id: review
+                    type: shell
+                    timeout: 3600
+                    continue_on_error: true
+                    run: "scripts/dev-loop/ringer_run.sh review {{ inputs.spec_dir }} '{{ inputs.ringer_config }}'"
+                  - id: triage
+                    type: shell
+                    output_format: json
+                    run: "python3 scripts/dev-loop/devloop.py triage {{ inputs.spec_dir }}"
+
+          - id: decide
+            type: shell
+            output_format: json
+            run: "python3 scripts/dev-loop/devloop.py decide {{ inputs.spec_dir }}"
+
+          - id: finish-wave
+            type: shell
+            output_format: json
+            run: "python3 scripts/dev-loop/devloop.py finish-wave {{ inputs.spec_dir }}"
+
+      - id: wave-status
+        type: shell
+        output_format: json
+        run: "python3 scripts/dev-loop/devloop.py wave-status {{ inputs.spec_dir }}"
+
+  - id: final
+    type: shell
+    output_format: json
+    run: "python3 scripts/dev-loop/devloop.py final {{ inputs.spec_dir }}"
+
+  # Every task is done: review the whole feature once, then decide.
+  - id: closeout
+    type: if
+    condition: "{{ steps.final.output.data.state == 'complete' }}"
+    then:
+      - id: closeout-review
+        type: shell
+        timeout: 3600
+        continue_on_error: true
+        run: "scripts/dev-loop/ringer_run.sh closeout {{ inputs.spec_dir }} '{{ inputs.ringer_config }}'"
+      - id: closeout-verify
+        type: shell
+        timeout: 1800
+        continue_on_error: true
+        run: "python3 scripts/dev-loop/devloop.py verify {{ inputs.spec_dir }} closeout"
+      - id: closeout-triage
+        type: shell
+        output_format: json
+        run: "python3 scripts/dev-loop/devloop.py triage {{ inputs.spec_dir }} --closeout"
+      - id: closeout-decide
+        type: shell
+        output_format: json
+        run: "python3 scripts/dev-loop/devloop.py decide {{ inputs.spec_dir }} --closeout"
+
+  - id: settle
+    type: shell
+    output_format: json
+    run: "python3 scripts/dev-loop/devloop.py settle {{ inputs.spec_dir }}"
+
+  # The only human gate after the run starts. It is outside every loop, because resuming a paused nested step
+  # re-runs its whole parent.
+  - id: needs-human
+    type: if
+    condition: "{{ steps.settle.output.data.needs_human }}"
+    then:
+      - id: human-gate
+        type: gate
+        message: "Dev loop stopped ({{ steps.settle.output.data.state }}): {{ steps.settle.output.data.reasons | join('; ') }}. Approve to accept this wave as it is, reject to stop."
+        options: [approve, reject]
+        on_reject: abort
+        verdict_input: human_verdict
+
+  # Approving an escalated wave is a recorded human override: its tasks are marked done.
+  - id: accept
+    type: if
+    condition: "{{ steps.settle.output.data.state == 'escalated' }}"
+    then:
+      - id: accept-wave
+        type: shell
+        run: "python3 scripts/dev-loop/devloop.py accept-wave {{ inputs.spec_dir }}"
+
+  - id: report
+    type: shell
+    run: "python3 scripts/dev-loop/devloop.py report {{ inputs.spec_dir }}"
