@@ -77,6 +77,14 @@ database: ringer
 sslmode: disable
 ```
 
+### Grafana dashboard
+
+`grafana-dashboard.json` is a ready-made dashboard for the same datasource: attempts, first-try pass rate, tokens and central-write fallbacks at the top; attempts per day by verdict and a verdict mix; a per-model scoreboard; tokens per day by model (top 8 models plus "Other"); attempts by task type; and recent failures and fallbacks. Filters for host, model and task type apply to every panel, and the default range is 90 days.
+
+Import it in Grafana with Dashboards > New > Import and upload the file. It reads a datasource variable named `ds`, which defaults to a PostgreSQL datasource whose UID is `ringer-evidence` (name it that when you create or provision the datasource, or pick yours from the "Data source" dropdown at the top of the dashboard). The datasource must be the read-only role above.
+
+Verdicts use fixed status colors (PASS green, FAIL red, TIMEOUT amber, ERROR orange) and always show their names. Models listed in the dashboard's color overrides keep a fixed color; add an override for a new model that becomes common, otherwise it falls back to Grafana's by-name palette. The queries read `ringer.attempts` only and need no extra grants.
+
 DuckDB can read the same views using its PostgreSQL extension:
 
 ```sql
