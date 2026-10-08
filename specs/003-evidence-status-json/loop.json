@@ -1,0 +1,69 @@
+{
+  "name": "evidence-status-json",
+  "engine": "codex",
+  "verify": [
+    "python3 specs/003-evidence-status-json/verify.py",
+    "python3 {repo}/scripts/dev-loop/diff_scope.py {base} ringer.py build_parser",
+    "python3 {repo}/scripts/dev-loop/suite.py --known test_every_merged_contributor_is_credited_in_readme"
+  ],
+  "known_failures": [
+    "test_every_merged_contributor_is_credited_in_readme"
+  ],
+  "build": {
+    "model": "gpt-6-luna",
+    "effort": "medium",
+    "timeout_s": 3000,
+    "brief": "build-brief.md",
+    "owned": [
+      "ringer.py",
+      "ringer_core/evidence_cli.py",
+      "tests/test_evidence_status_json.py",
+      "docs/EVIDENCE.md"
+    ],
+    "required_text": [
+      "--json"
+    ]
+  },
+  "review": {
+    "lenses": [
+      {
+        "key": "schema-and-compat",
+        "model": "gpt-6.1-sol",
+        "effort": "high",
+        "timeout_s": 1800,
+        "surface": "The `--json` path of `ringer evidence status`: ringer_core/evidence_cli.py, the `evidence status` sub-parser in ringer.py, docs/EVIDENCE.md. Dimensions: the JSON shape and key order against spec.md R2; counting and latest-fallback semantics against the human output (R3); every error kind and exit code (R4); empty files (R5); the guarantee that text mode is unchanged and that stdout holds only the document (R1, R6); timestamp normalization with mixed offsets and naive times; invalid rows (missing or non-string logged_at); duplicate --file arguments; non-UTF-8 and unreadable files; anything that can raise instead of producing an error entry."
+      },
+      {
+        "key": "tests-and-docs",
+        "model": "gpt-6-luna",
+        "effort": "medium",
+        "timeout_s": 1800,
+        "surface": "tests/test_evidence_status_json.py and the docs/EVIDENCE.md section, read against the code. Dimensions: for each requirement R1-R7 name one concrete mutation of the implementation (flip a comparison, swap two keys, drop an error entry, print extra text to stdout, change an exit code) and say whether any test would fail; tests that cannot fail or mirror the implementation; broad methods hiding which behavior failed; missing edge cases; whether the documentation matches the real behavior and output shape. You may run `python3 -m unittest tests.test_evidence_status_json` from the repo root."
+      }
+    ],
+    "quality_gate": {
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "timeout_s": 1800
+    }
+  },
+  "fix": {
+    "model": "gpt-6.1-sol",
+    "effort": "high",
+    "timeout_s": 3000
+  },
+  "escalate_paths": [
+    "scripts/central-evidence/",
+    "docs/decisions/",
+    "ringer_core/config.py",
+    "config.sample.toml",
+    ".github/"
+  ],
+  "checklists": "if-present",
+  "analysis": "if-present",
+  "closeout": {
+    "model": "gpt-6.1-sol",
+    "effort": "high",
+    "timeout_s": 1800
+  }
+}
