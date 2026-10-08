@@ -90,7 +90,7 @@ class Fixture:
         (self.run_dir / "verify-0.json").write_text(json.dumps({"passed": True}))
         (self.run_dir / "triage-1.json").write_text(json.dumps({"round": 1, "confirmed": [], "noted": [], "incomplete_lenses": []}))
         status = devloop.read_status(self.loop)
-        status.update(last_verify="verify-0", last_triage=1, round=1)
+        status.update(last_verify="verify-0", last_triage=1, round=1, run_exit={"build": 0})
         devloop.write_status(self.loop, status)
 
 
@@ -107,6 +107,12 @@ class ParseReportTests(unittest.TestCase):
 
 
 class TriageTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.checker_ok = True
+        original = devloop.report_passes
+        devloop.report_passes = lambda *a, **k: self.checker_ok
+        self.addCleanup(setattr, devloop, "report_passes", original)
+
     def triage(self, reports: dict[str, str]) -> tuple[dict, dict]:
         with tempfile.TemporaryDirectory() as tmp:
             fx = Fixture(Path(tmp))
@@ -137,6 +143,12 @@ class TriageTests(unittest.TestCase):
         summary, detail = self.triage({"one": "# Review Report\n\n## Findings\nNo findings for this surface.\n"})
         self.assertFalse(summary["need_fix"])
         self.assertEqual(["two"], detail["incomplete_lenses"])
+
+    def test_a_report_the_checker_rejects_is_incomplete_even_though_the_file_exists(self) -> None:
+        self.checker_ok = False
+        summary, detail = self.triage({"one": REPORT, "two": REPORT})
+        self.assertEqual(["one", "two"], detail["incomplete_lenses"])
+        self.assertEqual([], detail["confirmed"] + detail["noted"])
 
     def test_finding_ids_are_unique_across_lenses(self) -> None:
         _, detail = self.triage({"one": REPORT, "two": REPORT})
@@ -301,6 +313,42 @@ class DecideTests(unittest.TestCase):
             self.clean_change(fx)
             (fx.run_dir / "triage-1.json").write_text(json.dumps({"round": 1, "confirmed": [], "noted": [], "incomplete_lenses": ["two"]}))
         self.assertTrue(any("did not report" in r for r in self.decision(setup)["reasons"]))
+
+    def test_escalates_when_the_build_run_failed_or_was_not_recorded(self) -> None:
+        def failed(fx: Fixture) -> None:
+            self.clean_change(fx)
+            status = devloop.read_status(fx.loop)
+            status["run_exit"] = {"build": 1}
+            devloop.write_status(fx.loop, status)
+        self.assertTrue(any("build run did not succeed (Ringer exit 1)" in r for r in self.decision(failed)["reasons"]))
+
+        def unrecorded(fx: Fixture) -> None:
+            self.clean_change(fx)
+            status = devloop.read_status(fx.loop)
+            status.pop("run_exit")
+            devloop.write_status(fx.loop, status)
+        self.assertTrue(any("not recorded" in r for r in self.decision(unrecorded)["reasons"]))
+
+    def test_escalates_when_a_stray_change_is_left_uncommitted_in_the_worktree(self) -> None:
+        def setup(fx: Fixture) -> None:
+            self.clean_change(fx)
+            fx.write("other/stray.py")
+            (fx.wt / "README.md").write_text("edited\n")
+        d = self.decision(setup)
+        reason = next(r for r in d["reasons"] if "uncommitted changes" in r)
+        self.assertIn("other/stray.py", reason)
+        self.assertIn("README.md", reason)
+
+    def test_record_run_stores_the_exit_status_and_a_new_wave_clears_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = Fixture(Path(tmp))
+            original = devloop.load
+            devloop.load = lambda spec_dir: fx.loop
+            try:
+                devloop.cmd_record_run(type("A", (), {"spec_dir": "specs", "kind": "build", "exit_code": 3})())
+            finally:
+                devloop.load = original
+            self.assertEqual({"build": 3}, devloop.read_status(fx.loop)["run_exit"])
 
     def test_escalates_without_any_verification_record(self) -> None:
         def setup(fx: Fixture) -> None:

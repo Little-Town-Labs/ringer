@@ -56,14 +56,14 @@ The gate is always outside every loop, because resuming a paused nested step re-
 | Gate | Where | Fails when |
 |---|---|---|
 | Checklists (Spec Kit `implement` rule) | preflight | `checklists/` is missing (mode `required`) or has unchecked items |
-| Analysis | preflight | `analysis.md` reports `Critical Issues Count` above 0 (or is missing in mode `required`) |
+| Analysis | preflight | `analysis.md` reports `Critical Issues Count` above 0 (or is missing, or has no readable count, in mode `required`) |
 | Risk route | preflight | `risk` is `sensitive` or `production`: a hard stop, no mutable worker ever starts |
 | Route approval | preflight | `route_gate: true` asks a human before any worker starts |
 | Executed check | each build, fix, review | Ringer's check exits non-zero (one retry with the failure output) |
 | Verify | each wave | the `verify` commands fail (suite, real-environment checks, scope checks) |
 | Five-axis quality gate | each review round and closeout | a Critical or Required finding, or a verdict other than `APPROVE` |
 | Scope change | build, fix | a worker wrote a valid `scope-change.md`: the wave escalates and the lead returns to clarify and plan |
-| Decide | each wave | confirmed findings remain, a lens did not report, nothing changed, files outside the owned paths, a protected path was touched, or verification fails |
+| Decide | each wave | the build run failed (its Ringer exit is recorded by `ringer_run.sh`), confirmed findings remain, a lens did not report or its report fails the contract check on re-run, nothing changed, files outside the owned paths, uncommitted changes remain in the worktree, a protected path was touched, or verification fails |
 
 A preflight pause is a "proceed anyway?" question, as in Spec Kit: approve continues, reject stops.
 

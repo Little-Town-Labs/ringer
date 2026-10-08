@@ -257,6 +257,8 @@ def preflight(loop: Loop) -> dict[str, Any]:
             m = re.search(r"Critical Issues Count\D*(\d+)", analysis.read_text(encoding="utf-8", errors="replace"), re.I)
             if m and int(m.group(1)) > 0:
                 reasons.append(f"analysis.md reports {m.group(1)} critical issue(s)")
+            elif not m and amode == "required":
+                reasons.append("analysis.md has no readable 'Critical Issues Count' (run analyze again)")
         elif amode == "required":
             reasons.append("analysis.md is missing (run analyze first)")
     needs_route = bool(cfg.get("route_gate", False))
@@ -340,7 +342,7 @@ def start_wave(loop: Loop, status: dict[str, Any]) -> dict[str, Any]:
     head = git("rev-parse", "HEAD", cwd=loop.worktree).stdout.strip()
     status.update(wave=int(status.get("wave", 0)) + 1, wave_base_sha=head, round=0, wave_tasks=[t.id for t in chosen],
                   wave_titles={t.id: t.title for t in chosen}, wave_state="running")
-    for key in ("last_verify", "last_triage"):
+    for key in ("last_verify", "last_triage", "run_exit"):
         status.pop(key, None)
     write_status(loop, status)
     return {"run": True, "done": False, "blocked": False, "wave": status["wave"], "tasks": status["wave_tasks"], "reasons": []}
@@ -356,9 +358,12 @@ def cmd_next(args: argparse.Namespace) -> int:
 
 def verify_cmds(loop: Loop, status: dict[str, Any], closeout: bool = False) -> list[str]:
     """Verify commands with {repo} (this checkout) and {base} (the wave's, or for closeout the feature's, start commit)."""
+    return expand_cmds(loop.cfg["verify"], status, closeout)
+
+
+def expand_cmds(cmds: list[str], status: dict[str, Any], closeout: bool = False) -> list[str]:
     base = status["base_sha"] if closeout else status.get("wave_base_sha", status["base_sha"])
-    return [c.replace("{repo}", str(REPO)).replace("{base}", base).replace("{feature_base}", status["base_sha"])
-            for c in loop.cfg["verify"]]
+    return [c.replace("{repo}", str(REPO)).replace("{base}", base).replace("{feature_base}", status["base_sha"]) for c in cmds]
 
 
 def verify_chain(loop: Loop, status: dict[str, Any]) -> str:
@@ -428,7 +433,7 @@ def manifest_build(loop: Loop, status: dict[str, Any]) -> dict[str, Any]:
         others = [p for o in wave if o != tid for p in task_cfg(loop, o)["owned"]]
         brief = (loop.worktree / loop.spec_dir / cfg["brief"]).read_text(encoding="utf-8")
         if cfg.get("verify"):
-            cmds = [c.replace("{repo}", str(REPO)).replace("{base}", base) for c in cfg["verify"]]
+            cmds = expand_cmds(cfg["verify"], status)
         elif len(wave) == 1:
             cmds = verify_cmds(loop, status)
         else:
@@ -507,7 +512,7 @@ def reviewer_spec(loop: Loop, surface: str, diff_base: str, scope: str) -> str:
 
 def gate_task(loop: Loop, key: str, diff_base: str, scope: str, gate_cfg: dict[str, Any]) -> dict[str, Any]:
     spec = reviewer_spec(loop, GATE_RUBRIC, diff_base, scope) + GATE_CONTRACT
-    check = f"python3 '{GATE_CHECK}' --repo '{loop.worktree}' --report report.md"
+    check = report_check(loop, key, True)
     return ringer_task(loop, key, gate_cfg["model"], gate_cfg["effort"], gate_cfg.get("timeout_s", 1800), spec, check, ["report.md"],
                        "the report follows the quality-gate contract, covers all five axes, and every citation and quotation exists",
                        "code-review", False)
@@ -521,7 +526,7 @@ def manifest_review(loop: Loop, status: dict[str, Any]) -> dict[str, Any]:
     tasks = []
     for lens in loop.cfg["review"]["lenses"]:
         spec = reviewer_spec(loop, lens["surface"], base, scope) + REVIEW_CONTRACT
-        check = f"python3 '{REVIEW_CHECK}' --repo '{loop.worktree}' --report report.md --surface '{lens['key']}' --kit-check '{REVIEW_KIT_CHECK}'"
+        check = report_check(loop, lens["key"], False)
         tasks.append(ringer_task(loop, lens["key"], lens["model"], lens["effort"], lens.get("timeout_s", 1800), spec, check,
                                  ["report.md"], "report.md follows the review contract and every citation and long quotation exists",
                                  "code-review", False))
@@ -576,6 +581,15 @@ def cmd_manifest(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------- verify / commit
+
+def cmd_record_run(args: argparse.Namespace) -> int:
+    """Called by ringer_run.sh with the Ringer exit status, which the workflow's continue_on_error would otherwise lose."""
+    loop = load(args.spec_dir)
+    status = read_status(loop)
+    status.setdefault("run_exit", {})[args.kind] = args.exit_code
+    write_status(loop, status)
+    return 0
+
 
 def cmd_verify(args: argparse.Namespace) -> int:
     loop = load(args.spec_dir)
@@ -668,11 +682,22 @@ def parse_gate_report(text: str, lens: str) -> tuple[list[dict[str, Any]], str |
     return findings, verdict
 
 
-def triage_reports(report_root: Path, keys: list[str], gate_keys: tuple[str, ...], rnd: int) -> dict[str, Any]:
+def report_check(loop: Loop, key: str, gate: bool) -> str:
+    if gate:
+        return f"python3 '{GATE_CHECK}' --repo '{loop.worktree}' --report report.md"
+    return f"python3 '{REVIEW_CHECK}' --repo '{loop.worktree}' --report report.md --surface '{key}' --kit-check '{REVIEW_KIT_CHECK}'"
+
+
+def report_passes(loop: Loop, key: str, gate: bool, cwd: Path) -> bool:
+    return subprocess.run(report_check(loop, key, gate), shell=True, cwd=cwd, capture_output=True).returncode == 0
+
+
+def triage_reports(loop: Loop, report_root: Path, keys: list[str], gate_keys: tuple[str, ...], rnd: int) -> dict[str, Any]:
     confirmed, noted, missing, verdicts = [], [], [], {}
     for key in keys:
         report = report_root / key / "report.md"
-        if not report.is_file():
+        # A report that exists is not a report that passed: Ringer's check can still be failing after the retry.
+        if not report.is_file() or not report_passes(loop, key, key in gate_keys, report.parent):
             missing.append(key)
             continue
         text = report.read_text(encoding="utf-8", errors="replace")
@@ -695,13 +720,13 @@ def cmd_triage(args: argparse.Namespace) -> int:
     loop = load(args.spec_dir)
     status = read_status(loop)
     if args.closeout:
-        out = triage_reports(loop.run_dir / "closeout", ["closeout-gate"], ("closeout-gate",), 0)
+        out = triage_reports(loop, loop.run_dir / "closeout", ["closeout-gate"], ("closeout-gate",), 0)
         (loop.run_dir / "closeout-triage.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
     else:
         rnd = int(status.get("round", 0))
         keys = [lens["key"] for lens in loop.cfg["review"]["lenses"]]
         gate = ("quality-gate",) if loop.cfg["review"].get("quality_gate") else ()
-        out = triage_reports(loop.run_dir / f"{pfx(status)}review-{rnd}", keys + list(gate), gate, rnd)
+        out = triage_reports(loop, loop.run_dir / f"{pfx(status)}review-{rnd}", keys + list(gate), gate, rnd)
         (loop.run_dir / f"{pfx(status)}triage-{rnd}.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
         status["last_triage"] = rnd
         write_status(loop, status)
@@ -714,6 +739,12 @@ def cmd_triage(args: argparse.Namespace) -> int:
 
 def changed_files(loop: Loop, base_sha: str) -> list[str]:
     return [p for p in git("diff", "--name-only", f"{base_sha}..HEAD", cwd=loop.worktree).stdout.split() if p]
+
+
+def dirty_paths(loop: Loop) -> list[str]:
+    """Anything uncommitted in the worktree: commit_paths stages owned paths only, so a stray change would be verified but never merged."""
+    out = git("status", "--porcelain", "--untracked-files=all", cwd=loop.worktree).stdout.splitlines()
+    return [line[3:].split(" -> ")[-1].strip('"') for line in out if line.strip()]
 
 
 def scope_changes(loop: Loop, status: dict[str, Any]) -> list[dict[str, str]]:
@@ -760,6 +791,9 @@ def decide(loop: Loop, closeout: bool = False) -> dict[str, Any]:
             reasons.append(f"scope change requested by {c['task']}: {c['decision'] or 'see the report'}")
         if not files and not changes:
             reasons.append("the loop produced no change")
+        if status.get("run_exit", {}).get("build") != 0:
+            reasons.append(f"the build run did not succeed (Ringer exit {status.get('run_exit', {}).get('build', 'not recorded')}): "
+                           "a task's executed check failed")
         owned = owned_union(loop, status)
         outside = [p for p in files if not any(p == o or p.startswith(o.rstrip("/") + "/") for o in owned)]
         if outside:
@@ -767,6 +801,9 @@ def decide(loop: Loop, closeout: bool = False) -> dict[str, Any]:
         protected = [p for p in files if any(p.startswith(x) for x in loop.cfg.get("escalate_paths", []))]
         if protected:
             reasons.append("touches protected paths: " + ", ".join(protected[:5]))
+    dirty = dirty_paths(loop)
+    if dirty:
+        reasons.append("uncommitted changes in the worktree: " + ", ".join(dirty[:5]))
     if not vpath or not vpath.is_file():
         reasons.append("no verification result recorded")
     elif not json.loads(vpath.read_text(encoding="utf-8"))["passed"]:
@@ -932,7 +969,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = p.add_subparsers(dest="cmd", required=True)
     for name in ("preflight", "refuse", "init", "next", "manifest", "verify", "commit", "triage", "decide", "finish-wave", "wave-status",
-                 "accept-wave", "final", "settle", "report", "cleanup"):
+                 "accept-wave", "final", "settle", "report", "cleanup", "record-run"):
         s = sub.add_parser(name)
         s.add_argument("spec_dir")
         if name == "init":
@@ -941,6 +978,9 @@ def main(argv: list[str] | None = None) -> int:
             s.add_argument("kind", choices=("build", "review", "fix", "closeout"))
         if name == "verify":
             s.add_argument("tag")
+        if name == "record-run":
+            s.add_argument("kind")
+            s.add_argument("exit_code", type=int)
         if name == "commit":
             s.add_argument("message")
         if name in ("triage", "decide"):
@@ -949,7 +989,7 @@ def main(argv: list[str] | None = None) -> int:
     handlers = {"preflight": cmd_preflight, "refuse": cmd_refuse, "init": cmd_init, "next": cmd_next, "manifest": cmd_manifest, "verify": cmd_verify,
                 "commit": cmd_commit, "triage": cmd_triage, "decide": cmd_decide, "finish-wave": cmd_finish_wave,
                 "wave-status": cmd_wave_status, "accept-wave": cmd_accept_wave, "final": cmd_final, "settle": cmd_settle,
-                "report": cmd_report, "cleanup": cmd_cleanup}
+                "report": cmd_report, "cleanup": cmd_cleanup, "record-run": cmd_record_run}
     return handlers[args.cmd](args)
 
 

@@ -236,6 +236,13 @@ class PreflightTests(unittest.TestCase):
         self.assertTrue(self.check(files)["ok"])
         self.assertFalse(self.check({"checklists/r.md": "- [x] a\n"}, analysis="required")["ok"])
 
+    def test_required_analysis_without_a_readable_critical_count_fails(self) -> None:
+        files = {"checklists/r.md": "- [x] a\n", "analysis.md": "# Analysis\nlooks fine\n"}
+        out = self.check(files, analysis="required")
+        self.assertFalse(out["ok"])
+        self.assertIn("no readable 'Critical Issues Count'", out["reasons"][0])
+        self.assertTrue(self.check(files)["ok"])
+
     def test_sensitive_or_production_risk_is_a_hard_stop(self) -> None:
         for risk in ("sensitive", "production"):
             out = self.check({"checklists/r.md": "- [x] a\n"}, risk=risk)
@@ -266,7 +273,12 @@ class GateReportTests(unittest.TestCase):
             root = Path(tmp) / "review-1" / "quality-gate"
             root.mkdir(parents=True)
             (root / "report.md").write_text(report)
-            return devloop.triage_reports(Path(tmp) / "review-1", ["quality-gate"], ("quality-gate",), 1)
+            (Path(tmp) / "fx").mkdir()
+            fx = Fixture(Path(tmp) / "fx")
+            original = devloop.report_passes
+            devloop.report_passes = lambda *a, **k: True
+            self.addCleanup(setattr, devloop, "report_passes", original)
+            return devloop.triage_reports(fx.loop, Path(tmp) / "review-1", ["quality-gate"], ("quality-gate",), 1)
 
     def test_required_findings_are_confirmed_and_nits_are_only_noted(self) -> None:
         out = self.triage(GATE_REPORT)
@@ -313,6 +325,14 @@ class ScopeChangeTests(unittest.TestCase):
             task.mkdir(parents=True)
             (task / "scope-change.md").write_text("# Scope Change Required\nonly this\n")
             self.assertEqual([], devloop.scope_changes(fx.loop, devloop.read_status(fx.loop)))
+
+
+class ExpandCommandTests(unittest.TestCase):
+    def test_per_task_commands_expand_every_documented_placeholder(self) -> None:
+        status = {"base_sha": "FEATURE", "wave_base_sha": "WAVE"}
+        out = devloop.expand_cmds(["git diff {feature_base}..{base} {repo}"], status)
+        self.assertEqual([f"git diff FEATURE..WAVE {devloop.REPO}"], out)
+        self.assertEqual([f"git diff FEATURE..FEATURE {devloop.REPO}"], devloop.expand_cmds(["git diff {feature_base}..{base} {repo}"], status, closeout=True))
 
 
 class FinishWaveTests(unittest.TestCase):
