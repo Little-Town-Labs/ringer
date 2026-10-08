@@ -1,0 +1,7 @@
+{
+  "tasks": {
+    "T001": {"files": {"toy_out/alpha/result.txt": "alpha finished\n"}},
+    "T002": {"files": {"toy_out/beta/result.txt": "beta finished\n"}},
+    "T003": {"scope_change": "Allow combining across a new directory?"}
+  }
+}

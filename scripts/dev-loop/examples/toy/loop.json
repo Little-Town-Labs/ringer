@@ -1,0 +1,23 @@
+{
+  "name": "toy",
+  "engine": "scripted",
+  "risk": "routine",
+  "checklists": "required",
+  "analysis": "if-present",
+  "max_wave_size": 3,
+  "verify": ["python3 scripts/dev-loop/examples/toy/verify.py"],
+  "known_failures": [],
+  "build": {"model": "scripted", "effort": "low", "timeout_s": 300, "brief": "brief.md", "owned": ["toy_out"], "required_text": []},
+  "tasks": {
+    "T001": {"brief": "brief.md", "owned": ["toy_out/alpha"], "verify": ["test -s toy_out/alpha/result.txt"]},
+    "T002": {"brief": "brief.md", "owned": ["toy_out/beta"], "verify": ["test -s toy_out/beta/result.txt"]},
+    "T003": {"brief": "brief.md", "owned": ["toy_out/combined"], "verify": ["test -s toy_out/combined/result.txt"]}
+  },
+  "review": {
+    "lenses": [{"key": "correctness", "model": "scripted", "effort": "low", "surface": "toy_out. Dimensions: correctness.", "timeout_s": 300}],
+    "quality_gate": {"model": "scripted", "effort": "low", "timeout_s": 300}
+  },
+  "fix": {"model": "scripted", "effort": "low", "timeout_s": 300},
+  "closeout": {"model": "scripted", "effort": "low", "timeout_s": 300},
+  "escalate_paths": ["scripts/central-evidence/", "docs/decisions/"]
+}
