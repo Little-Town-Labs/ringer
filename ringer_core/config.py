@@ -38,6 +38,8 @@ class EngineConfig:
 @dataclass(frozen=True)
 class PostgresEvalConfig:
     env_file: Path
+    spec_storage: str = "hash"
+    source_host: str | None = None
 @dataclass(frozen=True)
 class EvalConfig:
     backend: str
@@ -242,7 +244,20 @@ def load_eval_config(raw: Any, state_dir: Path) -> EvalConfig:
         if env_file_raw is None:
             raise ValueError("eval.postgres.env_file is required")
         env_file = Path(env_file_raw).expanduser().resolve()
-        postgres = PostgresEvalConfig(env_file=env_file)
+        spec_storage = postgres_raw.get("spec_storage", "hash")
+        if not isinstance(spec_storage, str) or spec_storage not in {"hash", "excerpt"}:
+            raise ValueError("eval.postgres.spec_storage must be 'hash' or 'excerpt'")
+        source_host_raw = postgres_raw.get("source_host")
+        if source_host_raw is not None and not isinstance(source_host_raw, str):
+            raise ValueError("eval.postgres.source_host must be a non-empty string")
+        source_host = optional_string(source_host_raw)
+        if source_host_raw is not None and source_host is None:
+            raise ValueError("eval.postgres.source_host must be a non-empty string")
+        postgres = PostgresEvalConfig(
+            env_file=env_file,
+            spec_storage=spec_storage,
+            source_host=source_host,
+        )
     if backend == "postgres" and postgres is None:
         raise ValueError("eval.backend='postgres' requires [eval.postgres].env_file")
     return EvalConfig(backend=backend, jsonl_path=jsonl_path, postgres=postgres)

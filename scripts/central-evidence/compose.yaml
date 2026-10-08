@@ -1,0 +1,33 @@
+# Shared Postgres for Ringer evidence. Store credentials in a mode-600 .env.
+# RINGER_BIND_ADDR defaults to loopback; set it to the interface clients use
+# only when remote clients need access. RINGER_DB_PORT sets the published port.
+# Set RINGER_OWNER_PW, RINGER_WRITER_PW and RINGER_READER_PW in the .env file.
+services:
+  ringer-postgres:
+    image: postgres:16-alpine
+    container_name: ringer-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ringer
+      POSTGRES_USER: ringer_owner
+      POSTGRES_PASSWORD: ${RINGER_OWNER_PW:?set RINGER_OWNER_PW in .env}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    command:
+      - postgres
+      - -c
+      - password_encryption=scram-sha-256
+      - -c
+      - max_connections=40
+    ports:
+      - "${RINGER_BIND_ADDR:-127.0.0.1}:${RINGER_DB_PORT:-5440}:5432"
+    volumes:
+      - ringer-pgdata:/var/lib/postgresql/data
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ringer_owner -d ringer"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  ringer-pgdata:
