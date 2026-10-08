@@ -23,6 +23,7 @@ if sys.version_info < (3, 12):
     )
 
 from ringer_core import central_evidence
+from ringer_core.evidence_cli import run_evidence_command
 from ringer_core.steering import (STEERING_STATUSES, STEERING_AUDIENCES, STEERING_RULE_HEADING_RE, SteeringProfile, SteeringRule, _steering_yaml_values, inject_steering_spec, load_steering_profile, parse_steering_profile, resolve_steering_profile, steering_profile_candidates, steering_worker_rules)
 from ringer_core.runner import (DELIVERABLE_MAX_BYTES, FALLBACK_HARVEST_MAX_FILES, FALLBACK_HARVEST_SUFFIXES, SHEPHERD_MODEL, VERIFY_METHOD, RingerRunner, print_summary)
 
@@ -3044,6 +3045,19 @@ def build_parser() -> argparse.ArgumentParser:
     models_parser.add_argument("--open", action="store_true", help="render the HTML scoreboard to the artifact library and open it")
     models_parser.add_argument("--json", action="store_true", help="print the scoreboard as JSON")
 
+    evidence_parser = subparsers.add_parser("evidence", help="inspect and push local evaluation evidence")
+    evidence_parser.add_argument("--config", type=Path, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    evidence_subparsers = evidence_parser.add_subparsers(dest="evidence_command", required=True)
+    for name in ("push", "status"):
+        evidence_sub = evidence_subparsers.add_parser(name, help=f"{name} local evaluation evidence")
+        evidence_sub.add_argument("--config", type=Path, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+        evidence_sub.add_argument("--file", type=Path, action="append", dest="file", help="evidence JSONL files; default is the configured [eval] jsonl_path")
+        if name == "push":
+            evidence_sub.add_argument("--since", help="only include rows logged on or after this ISO-8601 date or datetime")
+            evidence_sub.add_argument("--source-host", help="source host name for central evidence")
+            evidence_sub.add_argument("--spec-storage", choices=("hash", "excerpt"), help="central prompt storage policy")
+            evidence_sub.add_argument("--dry-run", action="store_true", help="validate and report without sending rows")
+
     catalog_parser = subparsers.add_parser("catalog", help="show or refresh the local OpenRouter model catalog")
     catalog_parser.add_argument("--refresh", action="store_true", help="fetch source and rewrite the local snapshot")
     catalog_parser.add_argument("--source", help=f"OpenRouter models URL or fixture file (default: {DEFAULT_CATALOG_SOURCE})")
@@ -3163,6 +3177,8 @@ def main(argv: list[str] | None = None) -> int:
             return run_db_command(config, args)
         if args.command == "models":
             return run_models_command(config, args)
+        if args.command == "evidence":
+            return run_evidence_command(config, args, read_env=parse_env_file)
         if args.command == "hud":
             return run_persistent_hud(
                 config,
