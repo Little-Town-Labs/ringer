@@ -22,6 +22,8 @@ if sys.version_info < (3, 12):
         f"ringer requires Python 3.12+; found {sys.version.split()[0]} at {sys.executable}"
     )
 
+from ringer_core import central_evidence
+from ringer_core.evidence_cli import run_evidence_command
 from ringer_core.steering import (STEERING_STATUSES, STEERING_AUDIENCES, STEERING_RULE_HEADING_RE, SteeringProfile, SteeringRule, _steering_yaml_values, inject_steering_spec, load_steering_profile, parse_steering_profile, resolve_steering_profile, steering_profile_candidates, steering_worker_rules)
 from ringer_core.runner import (DELIVERABLE_MAX_BYTES, FALLBACK_HARVEST_MAX_FILES, FALLBACK_HARVEST_SUFFIXES, SHEPHERD_MODEL, VERIFY_METHOD, RingerRunner, print_summary)
 
@@ -1286,80 +1288,59 @@ class EvalLogger:
         self._conn: Any | None = None
         self._fallback_path = config.jsonl_path
         self._fallback_reason: str | None = None
+        self._fallback_warned = False
+        self._secrets: tuple[str, ...] = ()
         if config.backend == "postgres":
             self._connect()
+            if self._fallback_reason is not None:
+                self._warn_fallback()
 
     def log_attempt(self, row: dict[str, Any]) -> None:
+        postgres = self.config.postgres
+        source_host = central_evidence.resolve_source_host(postgres.source_host if postgres else None)
+        spec_storage = postgres.spec_storage if postgres else "hash"
+        stamped = central_evidence.stamp(row, source_host)
+        log_sink = "jsonl"
         if self._conn is not None:
-            db_row = {
-                key: value
-                for key, value in row.items()
-                if key not in {"model", "reasoning_effort", "task_type", "retry"}
-            }
             try:
-                self._conn.execute(
-                    """
-                    INSERT INTO swarm_runs (
-                        run_id, pattern, task_key, spec, worker_engine, shepherd_model,
-                        verify_method, verdict, duration_ms, worker_tokens, notes, orchestrator
-                    )
-                    VALUES (
-                        %(run_id)s, %(pattern)s, %(task_key)s, %(spec)s, %(worker_engine)s,
-                        %(shepherd_model)s, %(verify_method)s, %(verdict)s, %(duration_ms)s,
-                        %(worker_tokens)s, %(notes)s, %(orchestrator)s
-                    )
-                    """,
-                    db_row,
-                )
-                return
+                central_row = dict(stamped, log_sink="postgres", fallback_reason=None)
+                params = central_evidence.to_params(central_row, source_host, spec_storage)
+                self._conn.execute(central_evidence.INSERT_SQL, params)
+                log_sink = "postgres"
             except Exception as exc:
-                self._fallback_reason = f"Supabase insert failed: {exc}"
+                self._fallback_reason = central_evidence.scrub(f"postgres insert failed: {exc}", self._secrets)
                 self._close_conn()
-        self._write_jsonl(row)
+                self._warn_fallback()
+        self._write_jsonl(stamped, log_sink)
 
     def close(self) -> None:
         self._close_conn()
 
     def _connect(self) -> None:
-        try:
-            import psycopg  # type: ignore[import-not-found]
-        except Exception as exc:
-            self._fallback_reason = f"psycopg import failed: {exc}"
-            return
         if self.config.postgres is None:
-            self._fallback_reason = "postgres eval config missing"
-            return
-        creds = parse_env_file(self.config.postgres.env_file)
-        required = [
-            "SUPABASE_DB_HOST",
-            "SUPABASE_DB_PORT",
-            "SUPABASE_DB_USER",
-            "SUPABASE_DB_PASSWORD",
-            "SUPABASE_DB_NAME",
-        ]
-        missing = [key for key in required if not creds.get(key)]
-        if missing:
-            self._fallback_reason = f"missing Supabase env keys: {', '.join(missing)}"
+            self._fallback_reason = "postgres config missing"
             return
         try:
-            self._conn = psycopg.connect(
-                host=creds["SUPABASE_DB_HOST"],
-                port=int(creds["SUPABASE_DB_PORT"]),
-                user=creds["SUPABASE_DB_USER"],
-                password=creds["SUPABASE_DB_PASSWORD"],
-                dbname=creds["SUPABASE_DB_NAME"],
-                autocommit=True,
-                connect_timeout=5,
-            )
+            credentials = central_evidence.resolve_credentials(parse_env_file(self.config.postgres.env_file))
+            self._secrets = (credentials.password,)
+            self._conn = central_evidence.connect(credentials, autocommit=True)
         except Exception as exc:
-            self._fallback_reason = f"Supabase connect failed: {exc}"
+            self._fallback_reason = central_evidence.scrub(f"postgres connect failed: {exc}", self._secrets)
 
-    def _write_jsonl(self, row: dict[str, Any]) -> None:
+    def _write_jsonl(self, row: dict[str, Any], log_sink: str) -> None:
         payload = dict(row)
-        payload["logged_at"] = datetime.now(timezone.utc).isoformat()
-        payload["log_sink"] = "jsonl"
-        payload["fallback_reason"] = self._fallback_reason
+        payload["log_sink"] = log_sink
+        payload["fallback_reason"] = None if log_sink == "postgres" else self._fallback_reason
         append_jsonl(self._fallback_path, payload)
+
+    def _warn_fallback(self) -> None:
+        if not self._fallback_warned:
+            print(
+                f"ringer: central evidence write failed ({self._fallback_reason}); "
+                f"attempt rows are still saved to {self._fallback_path}",
+                file=sys.stderr,
+            )
+            self._fallback_warned = True
 
     def _close_conn(self) -> None:
         if self._conn is not None:
@@ -3065,6 +3046,19 @@ def build_parser() -> argparse.ArgumentParser:
     models_parser.add_argument("--open", action="store_true", help="render the HTML scoreboard to the artifact library and open it")
     models_parser.add_argument("--json", action="store_true", help="print the scoreboard as JSON")
 
+    evidence_parser = subparsers.add_parser("evidence", help="inspect and push local evaluation evidence")
+    evidence_parser.add_argument("--config", type=Path, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    evidence_subparsers = evidence_parser.add_subparsers(dest="evidence_command", required=True)
+    for name in ("push", "status"):
+        evidence_sub = evidence_subparsers.add_parser(name, help=f"{name} local evaluation evidence")
+        evidence_sub.add_argument("--config", type=Path, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+        evidence_sub.add_argument("--file", type=Path, action="append", dest="file", help="evidence JSONL files; default is the configured [eval] jsonl_path")
+        if name == "push":
+            evidence_sub.add_argument("--since", help="only include rows logged on or after this ISO-8601 date or datetime")
+            evidence_sub.add_argument("--source-host", help="source host name for central evidence")
+            evidence_sub.add_argument("--spec-storage", choices=("hash", "excerpt"), help="central prompt storage policy")
+            evidence_sub.add_argument("--dry-run", action="store_true", help="validate and report without sending rows")
+
     catalog_parser = subparsers.add_parser("catalog", help="show or refresh the local OpenRouter model catalog")
     catalog_parser.add_argument("--refresh", action="store_true", help="fetch source and rewrite the local snapshot")
     catalog_parser.add_argument("--source", help=f"OpenRouter models URL or fixture file (default: {DEFAULT_CATALOG_SOURCE})")
@@ -3184,6 +3178,8 @@ def main(argv: list[str] | None = None) -> int:
             return run_db_command(config, args)
         if args.command == "models":
             return run_models_command(config, args)
+        if args.command == "evidence":
+            return run_evidence_command(config, args, read_env=parse_env_file)
         if args.command == "hud":
             return run_persistent_hud(
                 config,

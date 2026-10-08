@@ -11,7 +11,7 @@ Ringer is a Python command-line tool. `ringer.py` parses commands, loads configu
 - `state.py` writes run snapshots and coordinates artifact rendering and library updates. `state_files.py` handles atomic state files and scans stored run state.
 - `artifact_store.py` manages generated HTML artifact paths, deliverables, and the artifact library. `artifact_views.py` renders local HTML pages.
 - `presentation.py` serves Ringside and the per-run browser view. It reads run state and serves local presentation routes.
-- `evidence.py` appends attempt rows to local JSONL evidence. `ringer.py` also contains `EvalLogger`, which selects the JSONL or explicitly configured PostgreSQL backend.
+- `evidence.py` appends attempt rows to local JSONL evidence. `central_evidence.py` holds attempt identity, the prompt policy, credential resolution, the strict JSONL reader, and the idempotent central insert; it imports no CLI code and loads `psycopg` lazily. `evidence_cli.py` implements `ringer evidence push` and `status`. `ringer.py` also contains `EvalLogger`, which always writes JSONL and, when the PostgreSQL backend is configured, also writes the central row.
 - `models.py`, `model_views.py`, `models_api.py`, and `read_model.py` derive model summaries, render model pages and APIs, and read analytics data. SQLite is the existing local analytics format; it is separate from the JSONL attempt log.
 - `catalog.py` handles model catalog data. `steering.py` loads optional steering profiles. `context.py` handles context selection for `ask`.
 
@@ -25,7 +25,7 @@ Presentation and HTML artifacts are separate from run state and task outputs. Ri
 
 ## Runner logger ownership
 
-`RingerRunner` requires a keyword-only `logger` argument that implements `log_attempt(row)` and `close()`. Its normal `run()` cleanup closes the logger. If runner construction fails, the caller must close the logger. `EvalLogger` remains in `ringer.py` and provides the existing JSONL and PostgreSQL behavior.
+`RingerRunner` requires a keyword-only `logger` argument that implements `log_attempt(row)` and `close()`. Its normal `run()` cleanup closes the logger. If runner construction fails, the caller must close the logger. `EvalLogger` remains in `ringer.py`.
 
 ```python
 from pathlib import Path
@@ -51,8 +51,8 @@ except BaseException:
 await runner.run()  # RingerRunner closes logger during run cleanup.
 ```
 
-Use the existing `EvalLogger` implementation when the caller needs the configured evidence backend. The CLI now creates it before runner initialization, so backend initialization can occur earlier if runner construction fails. PostgreSQL remains an explicit backend selected through `[eval]` and `[eval.postgres]`. Its environment-file credential behavior was not changed. SQLite remains an existing analytics input. DuckDB ingestion is deferred.
+Use the existing `EvalLogger` implementation when the caller needs the configured evidence backend. The CLI now creates it before runner initialization, so backend initialization can occur earlier if runner construction fails. PostgreSQL remains an explicit backend selected through `[eval]` and `[eval.postgres]`. Since ADR-002 it is written in addition to JSONL, not instead of it, and database settings are read from `RINGER_DB_*` with the older `SUPABASE_DB_*` names as a per-key fallback. SQLite remains an existing analytics input. DuckDB ingestion is deferred.
 
 ## Decision record
 
-See [ADR-001](decisions/001-headless-local-evidence.md) for the rationale behind headless local evidence and the boundary between evidence storage and presentation.
+See [ADR-001](decisions/001-headless-local-evidence.md) for the rationale behind headless local evidence and the boundary between evidence storage and presentation. See [ADR-002](decisions/002-shared-evidence.md) for the optional shared evidence store, which supersedes ADR-001's decision to preserve the previous PostgreSQL logger behavior.

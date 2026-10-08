@@ -124,12 +124,16 @@ class ModelLogTests(unittest.TestCase):
             self.assertIn("task_type=code-feature", payload["notes"])
             self.assertIn("retry=true", payload["notes"])
 
-    def test_postgres_params_exclude_local_model_log_keys(self) -> None:
+    def test_postgres_params_include_all_attempt_columns(self) -> None:
+        from ringer_core import central_evidence
+
         class FakeConn:
             def __init__(self) -> None:
+                self.sql: str | None = None
                 self.params: dict[str, object] | None = None
 
-            def execute(self, _sql: str, params: dict[str, object]) -> None:
+            def execute(self, sql: str, params: dict[str, object]) -> None:
+                self.sql = sql
                 self.params = params
 
             def close(self) -> None:
@@ -157,30 +161,19 @@ class ModelLogTests(unittest.TestCase):
                 "model": "openrouter/x",
                 "task_type": "code-feature",
                 "retry": False,
+                "reasoning_effort": "high",
             }
             logger.log_attempt(row)
             self.assertIsNotNone(fake.params)
             assert fake.params is not None
-            self.assertNotIn("model", fake.params)
-            self.assertNotIn("task_type", fake.params)
-            self.assertNotIn("retry", fake.params)
-            self.assertEqual(
-                {
-                    "run_id",
-                    "pattern",
-                    "task_key",
-                    "spec",
-                    "worker_engine",
-                    "shepherd_model",
-                    "verify_method",
-                    "verdict",
-                    "duration_ms",
-                    "worker_tokens",
-                    "notes",
-                    "orchestrator",
-                },
-                set(fake.params),
-            )
+            self.assertEqual(fake.sql, central_evidence.INSERT_SQL)
+            self.assertEqual(set(fake.params), set(central_evidence.ATTEMPT_COLUMNS))
+            for key in ("model", "task_type", "retry", "reasoning_effort"):
+                self.assertEqual(fake.params[key], row[key])
+            self.assertIsNone(fake.params["spec"])
+            self.assertTrue(fake.params["spec_sha256"])
+            payload = json.loads((Path(temp) / "eval.jsonl").read_text(encoding="utf-8"))
+            self.assertEqual(payload["log_sink"], "postgres")
 
     def test_models_aggregation_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
