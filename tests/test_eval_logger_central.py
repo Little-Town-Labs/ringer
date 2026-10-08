@@ -94,7 +94,8 @@ class EvalLoggerCentralTests(unittest.TestCase):
         self.assertIsNone(params["spec"])
         self.assertEqual(params["spec_sha256"], hashlib.sha256(self.row["spec"].encode()).hexdigest())
         self.assertEqual(local, dict(self.row, logged_at=params["logged_at"],
-                                    log_sink="postgres", fallback_reason=None))
+                                    log_sink="postgres", fallback_reason=None,
+                                    source_host=params["source_host"], attempt_uid=params["attempt_uid"]))
 
     def test_default_hostname_and_existing_timestamp_are_preserved(self) -> None:
         row = dict(self.row, logged_at="2026-10-08T14:30:00+02:00")
@@ -204,11 +205,76 @@ class EvalLoggerCentralTests(unittest.TestCase):
             logger.log_attempt(self.row)
             logger.close()
         local = self.rows()[0]
-        self.assertEqual(set(local), set(self.row) | {"logged_at", "log_sink", "fallback_reason"})
+        self.assertEqual(set(local), set(self.row) | {"logged_at", "log_sink", "fallback_reason",
+                                                    "source_host", "attempt_uid"})
         self.assertEqual(local["log_sink"], "jsonl")
         self.assertIsNone(local["fallback_reason"])
         self.assertEqual(stderr.getvalue(), "")
         self.driver.connect.assert_not_called()
+
+    def test_plain_jsonl_stamps_identity(self) -> None:
+        with mock.patch("ringer_core.central_evidence.socket.gethostname", return_value="local.example"):
+            logger = ringer.EvalLogger(EvalConfig("jsonl", self.path))
+            logger.log_attempt(self.row)
+            logger.close()
+        local = self.rows()[0]
+        self.assertEqual(local["source_host"], "local")
+        self.assertEqual(local["attempt_uid"], central_evidence.attempt_uid("local", local))
+
+    def test_postgres_and_local_rows_share_identity(self) -> None:
+        logger = ringer.EvalLogger(self.config(source_host="origin"))
+        logger.log_attempt(self.row)
+        logger.close()
+        local = self.rows()[0]
+        params = self.conn.executed[0][1]
+        for field in ("logged_at", "source_host", "attempt_uid"):
+            self.assertEqual(local[field], params[field])
+        self.assertEqual(local["attempt_uid"], central_evidence.attempt_uid("origin", local))
+
+    def test_log_attempt_stamps_empty_timestamp(self) -> None:
+        for value in (None, ""):
+            with self.subTest(value=value):
+                logger = ringer.EvalLogger(self.config())
+                logger.log_attempt(dict(self.row, logged_at=value))
+                logger.close()
+                local = self.rows()[-1]
+                self.assertTrue(local["logged_at"])
+                self.assertEqual(local["logged_at"], self.conn.executed[-1][1]["logged_at"])
+
+    def test_connect_failure_scrubs_password_from_fallback_reason(self) -> None:
+        self.driver.connect.side_effect = OSError("connect failed: test-password test-password")
+        with contextlib.redirect_stderr(io.StringIO()):
+            logger = ringer.EvalLogger(self.config())
+            logger.log_attempt(self.row)
+            logger.close()
+        self.assertEqual(self.rows()[0]["fallback_reason"], "postgres connect failed: connect failed: *** ***")
+
+    def test_connect_failure_scrubs_password_from_warning(self) -> None:
+        self.driver.connect.side_effect = OSError("connect failed: test-password")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            logger = ringer.EvalLogger(self.config())
+            logger.close()
+        self.assertNotIn("test-password", stderr.getvalue())
+        self.assert_warning(stderr, "postgres connect failed: connect failed: ***")
+
+    def test_write_failure_scrubs_password_from_fallback_reason(self) -> None:
+        self.conn.error = RuntimeError("write failed: test-password test-password")
+        with contextlib.redirect_stderr(io.StringIO()):
+            logger = ringer.EvalLogger(self.config())
+            logger.log_attempt(self.row)
+            logger.close()
+        self.assertEqual(self.rows()[0]["fallback_reason"], "postgres insert failed: write failed: *** ***")
+
+    def test_write_failure_scrubs_password_from_warning(self) -> None:
+        self.conn.error = RuntimeError("write failed: test-password")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            logger = ringer.EvalLogger(self.config())
+            logger.log_attempt(self.row)
+            logger.close()
+        self.assertNotIn("test-password", stderr.getvalue())
+        self.assert_warning(stderr, "postgres insert failed: write failed: ***")
 
     def test_jsonl_failure_propagates_after_central_insert(self) -> None:
         logger = ringer.EvalLogger(self.config())

@@ -23,7 +23,7 @@ The shipped table had no definition in the repository, and the settings and mess
 Keep local JSONL as the default and the system of record. When `[eval] backend = "postgres"`, `EvalLogger` writes **both**: the JSONL row always, and the central row in addition.
 
 - **Central table.** `ringer.attempts` holds every field of a JSONL row. The schema, a compose template, a backup script and an operator runbook live in `scripts/central-evidence/`.
-- **Identity.** Each attempt has `attempt_uid`, the SHA-256 of `source_host | logged_at | run_id | task_key | worker_engine`, using the exact `logged_at` string written to JSONL. The logger stamps `logged_at` once and uses it for both sinks, so a row has the same identity whichever sink stored it.
+- **Identity.** Each attempt has `attempt_uid`, the SHA-256 of `source_host | logged_at | run_id | task_key | worker_engine`, using the exact `logged_at` string written to JSONL. The logger stamps `logged_at`, `source_host` and `attempt_uid` once and uses them for both sinks, so a row has the same identity whichever sink stored it, and the local row carries that identity.
 - **Idempotent writes.** Inserts use `ON CONFLICT DO NOTHING` with no conflict target. The writer role is insert-only and cannot read the table, and naming a conflict target would require SELECT.
 - **`log_sink` meaning.** `postgres` means the central write succeeded. `jsonl` means it did not (or no connection was configured); `fallback_reason` records why. A failed central write still saves the row locally and prints one warning per run.
 - **Prompt policy.** The central store holds only a SHA-256 of the stored prompt excerpt by default (`[eval.postgres] spec_storage = "hash"`). `"excerpt"` stores the excerpt. Local JSONL is unchanged.
@@ -57,7 +57,7 @@ Rejected for the reasons in Context: no stored definition, a lossy insert, and n
 - Existing PostgreSQL users get one extra JSONL row per attempt, by design.
 - `psycopg` is required only when the `postgres` backend or `evidence push` is used; it is imported lazily.
 - Local evidence files remain complete, so the central database can be rebuilt with `ringer evidence push`.
-- `source_host` is part of attempt identity. A changed hostname changes the identity and can duplicate rows on a later push; set `[eval.postgres] source_host` to pin it.
+- `source_host` is part of attempt identity, and it is stored in each local row, so identity survives a changed hostname or a push from another machine. Rows written before this decision carry no stored identity and take the pushing machine's host (or `--source-host`); for those, set `[eval.postgres] source_host` or pass `--source-host` so the same name is always used.
 - `evidence push` reads the configured JSONL path by default. Evidence kept in other files is sent by passing each with `--file`.
 - Prompt text is not copied centrally by default, and the stored excerpt is already truncated to 500 characters, so the hash covers the excerpt, not the full prompt.
 - Live "running now" status is not part of this decision. The central store holds finished attempts only.

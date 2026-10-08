@@ -10,6 +10,8 @@
 - [x] T008: ADR-002 `docs/decisions/002-shared-evidence.md` (supersedes ADR-001's deferral and its "preserve existing PostgreSQL behavior" for the new backend; records dual-write, identity, spec policy); update `docs/EVIDENCE.md`, `README.md`, `docs/ARCHITECTURE.md`, and `config.sample.toml` comments. Prerequisites T004, T005. Owned docs/, README.md. (R10) Done: ADR-002, EVIDENCE.md, ARCHITECTURE.md, README.md updated; links and documented commands verified; written inline (prose, per the playbook).
 - [ ] T009: Full verification and independent review: full suite, CLI smoke with mock worker and fake/throwaway database in a temp HOME, whole-diff review by a fresh reviewer (at least one lens on a different model family), docs accuracy pass. Prerequisites T002-T008. (R11). Done: see t001.md; baseline 291 tests, 1 known failure.
 
+- [x] T010: Review fixes (gpt-6.1-sol, 1 attempt): durable identity stored in local rows and honored by push, strict value validation, validate-every-row with physical line numbers, password scrubbing; docs and sample fixes inline. See review.md.
+
 ## Parallelism and limits
 T002, T003, T006 touch disjoint files and may run in parallel after T001. T004 then T005 are sequential because both edit `ringer.py`. T007 is the only task that touches production. Per-task limits from spec 001 carry over: one bounded implementation, one independent review, at most one remediation and one delta review, then stop for owner decision.
 

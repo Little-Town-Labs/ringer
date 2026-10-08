@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import socket
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,13 +69,27 @@ def to_params(row: Mapping[str, Any], source_host: str,
         raise ValueError(f"invalid logged_at: {exc}") from exc
     for field in ("duration_ms", "worker_tokens"):
         value = row.get(field)
-        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
-            raise ValueError(f"{field} not an integer: {value!r}")
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int)
+                                  or not -(2**63) <= value <= 2**63 - 1):
+            raise ValueError(f"{field} out of range: {value!r}")
+    for field in ("pattern", "task_type", "orchestrator", "worker_engine", "model",
+                  "expected_model", "reported_model", "reasoning_effort", "shepherd_model",
+                  "verify_method", "notes", "log_sink", "fallback_reason", "spec"):
+        if row.get(field) is not None and not isinstance(row[field], str):
+            raise ValueError(f"{field} must be text")
     if row.get("retry") is not None and not isinstance(row["retry"], bool):
         raise ValueError(f"retry not boolean: {row['retry']!r}")
+    if "source_host" in row:
+        if not isinstance(row["source_host"], str) or not row["source_host"].strip():
+            raise ValueError("source_host must be non-empty text")
+        source_host = row["source_host"]
+    uid = attempt_uid(source_host, row)
+    if row.get("attempt_uid") and row["attempt_uid"] != uid:
+        raise ValueError("attempt_uid does not match the row's identity fields "
+                         "(source_host, logged_at, run_id, task_key, worker_engine)")
     out = {column: row.get(column) for column in ATTEMPT_COLUMNS}
     out["source_host"] = source_host
-    out["attempt_uid"] = attempt_uid(source_host, row)
+    out["attempt_uid"] = uid
     out["log_sink"] = out["log_sink"] or "jsonl"
     return apply_spec_policy(out, spec_storage)
 
@@ -128,7 +142,15 @@ def connect(credentials: Credentials, autocommit: bool = False) -> Any:
     return psycopg.connect(**kwargs)
 
 
-def read_jsonl_rows(path: Path) -> list[dict]:
+def scrub(text: str, secrets: Iterable[str]) -> str:
+    """Remove known secrets from diagnostic text."""
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "***")
+    return text
+
+
+def read_jsonl_numbered(path: Path) -> list[tuple[int, dict]]:
     """Read objects strictly, reporting malformed rows without changing the file."""
     rows = []
     with path.open(encoding="utf-8") as handle:
@@ -141,8 +163,13 @@ def read_jsonl_rows(path: Path) -> list[dict]:
                 raise ValueError(f"{path}:{number}: {exc}") from exc
             if not isinstance(row, dict):
                 raise ValueError(f"{path}:{number}: not a JSON object")
-            rows.append(row)
+            rows.append((number, row))
     return rows
+
+
+def read_jsonl_rows(path: Path) -> list[dict]:
+    """Read objects strictly, preserving the numbered reader's diagnostics."""
+    return [row for _, row in read_jsonl_numbered(path)]
 
 
 @dataclass(frozen=True)

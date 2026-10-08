@@ -1,8 +1,8 @@
 -- Shared evidence schema for a Ringer Postgres database.
--- Apply as the database owner, passing role passwords as psql variables so
--- no secret lands in this file or in shell history:
---   psql -v ON_ERROR_STOP=1 -v writer_pw="$RINGER_WRITER_PW" \
---        -v reader_pw="$RINGER_READER_PW" -d ringer -f schema.sql
+-- Apply as the database owner. The role passwords are psql variables
+-- (writer_pw, reader_pw); set them with \set lines sent on standard input
+-- ahead of this file so no secret appears in a command line or in this file.
+-- See README.md next to this file for the exact command.
 -- Re-running is safe (idempotent) except that role passwords are reset.
 
 BEGIN;

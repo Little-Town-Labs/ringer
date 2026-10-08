@@ -183,7 +183,7 @@ class CentralEvidenceTests(unittest.TestCase):
             self.assertIn("excerpt", str(raised.exception))
 
     def test_to_params_exact_columns_defaults_and_extra_keys(self):
-        row = {**_row(), "extra": "ignore", "attempt_uid": "stale", "source_host": "stale"}
+        row = {**_row(), "extra": "ignore"}
         original = dict(row)
         result = to_params(row, "host")
         self.assertEqual(set(result), set(ATTEMPT_COLUMNS))
@@ -194,6 +194,56 @@ class CentralEvidenceTests(unittest.TestCase):
             with self.subTest(field=field):
                 self.assertIsNone(result[field])
         self.assertEqual(row, original)
+
+    def test_to_params_preserves_stored_identity(self):
+        row = stamp(_row(), "original-host")
+        params = to_params(row, "replay-host")
+        self.assertEqual(params["source_host"], row["source_host"])
+        self.assertEqual(params["attempt_uid"], row["attempt_uid"])
+
+    def test_to_params_computes_uid_from_stored_host(self):
+        row = {**_row(), "source_host": "original-host"}
+        self.assertEqual(to_params(row, "replay-host")["attempt_uid"],
+                         attempt_uid("original-host", row))
+
+    def test_to_params_rejects_mismatched_uid(self):
+        row = {**stamp(_row(), "host"), "attempt_uid": "wrong"}
+        with self.assertRaises(ValueError) as raised:
+            to_params(row, "host")
+        self.assertEqual(str(raised.exception), "attempt_uid does not match the row's identity fields "
+                         "(source_host, logged_at, run_id, task_key, worker_engine)")
+
+    def test_to_params_rejects_invalid_stored_host(self):
+        for value in (None, "", "  ", 123, False):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "source_host"):
+                to_params({**_row(), "source_host": value}, "host")
+
+    def test_to_params_accepts_bigint_lower_bound(self):
+        for field in ("duration_ms", "worker_tokens"):
+            with self.subTest(field=field):
+                self.assertEqual(to_params({**_row(), field: -(2**63)}, "host")[field], -(2**63))
+
+    def test_to_params_accepts_bigint_upper_bound(self):
+        for field in ("duration_ms", "worker_tokens"):
+            with self.subTest(field=field):
+                self.assertEqual(to_params({**_row(), field: 2**63 - 1}, "host")[field], 2**63 - 1)
+
+    def test_to_params_rejects_below_bigint_lower_bound(self):
+        for field in ("duration_ms", "worker_tokens"):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, f"{field}.*out of range"):
+                to_params({**_row(), field: -(2**63) - 1}, "host")
+
+    def test_to_params_rejects_above_bigint_upper_bound(self):
+        for field in ("duration_ms", "worker_tokens"):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, f"{field}.*out of range"):
+                to_params({**_row(), field: 2**63}, "host")
+
+    def test_to_params_rejects_nontext_fields(self):
+        for field in ("pattern", "task_type", "orchestrator", "worker_engine", "model",
+                      "expected_model", "reported_model", "reasoning_effort", "shepherd_model",
+                      "verify_method", "notes", "log_sink", "fallback_reason", "spec"):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, f"^{field} must be text$"):
+                to_params({**_row(), field: 123}, "host")
 
     def test_to_params_preserves_optional_fields_and_spec_policy(self):
         row = {**_row(), "retry": False, "duration_ms": 0, "worker_tokens": 12,
@@ -314,6 +364,26 @@ assert "psycopg" not in sys.modules
             path.write_bytes(data)
             self.assertEqual(read_jsonl_rows(path), rows)
             self.assertEqual(path.read_bytes(), data)
+
+    def test_read_jsonl_numbered_keeps_physical_line_numbers(self):
+        from ringer_core.central_evidence import read_jsonl_numbered
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rows.jsonl"
+            rows = [_row(), {"spec": "text"}]
+            path.write_text("\n\n" + json.dumps(rows[0]) + "\n  \n" + json.dumps(rows[1]))
+            self.assertEqual(read_jsonl_numbered(path), [(3, rows[0]), (5, rows[1])])
+
+    def test_scrub_replaces_every_secret_occurrence(self):
+        from ringer_core.central_evidence import scrub
+
+        self.assertEqual(scrub("password=a-secret; a-secret b-secret", ("a-secret", "b-secret")),
+                         "password=***; *** ***")
+
+    def test_scrub_ignores_empty_secrets(self):
+        from ringer_core.central_evidence import scrub
+
+        self.assertEqual(scrub("unchanged", ("",)), "unchanged")
 
     def test_read_jsonl_invalid_json_reports_path_and_line(self):
         with tempfile.TemporaryDirectory() as directory:

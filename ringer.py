@@ -1289,6 +1289,7 @@ class EvalLogger:
         self._fallback_path = config.jsonl_path
         self._fallback_reason: str | None = None
         self._fallback_warned = False
+        self._secrets: tuple[str, ...] = ()
         if config.backend == "postgres":
             self._connect()
             if self._fallback_reason is not None:
@@ -1298,19 +1299,19 @@ class EvalLogger:
         postgres = self.config.postgres
         source_host = central_evidence.resolve_source_host(postgres.source_host if postgres else None)
         spec_storage = postgres.spec_storage if postgres else "hash"
-        logged_at = row["logged_at"] if "logged_at" in row else datetime.now(timezone.utc).isoformat()
+        stamped = central_evidence.stamp(row, source_host)
         log_sink = "jsonl"
         if self._conn is not None:
             try:
-                central_row = dict(row, logged_at=logged_at, log_sink="postgres", fallback_reason=None)
+                central_row = dict(stamped, log_sink="postgres", fallback_reason=None)
                 params = central_evidence.to_params(central_row, source_host, spec_storage)
                 self._conn.execute(central_evidence.INSERT_SQL, params)
                 log_sink = "postgres"
             except Exception as exc:
-                self._fallback_reason = f"postgres insert failed: {exc}"
+                self._fallback_reason = central_evidence.scrub(f"postgres insert failed: {exc}", self._secrets)
                 self._close_conn()
                 self._warn_fallback()
-        self._write_jsonl(row, logged_at, log_sink)
+        self._write_jsonl(stamped, log_sink)
 
     def close(self) -> None:
         self._close_conn()
@@ -1321,13 +1322,13 @@ class EvalLogger:
             return
         try:
             credentials = central_evidence.resolve_credentials(parse_env_file(self.config.postgres.env_file))
+            self._secrets = (credentials.password,)
             self._conn = central_evidence.connect(credentials, autocommit=True)
         except Exception as exc:
-            self._fallback_reason = f"postgres connect failed: {exc}"
+            self._fallback_reason = central_evidence.scrub(f"postgres connect failed: {exc}", self._secrets)
 
-    def _write_jsonl(self, row: dict[str, Any], logged_at: str, log_sink: str) -> None:
+    def _write_jsonl(self, row: dict[str, Any], log_sink: str) -> None:
         payload = dict(row)
-        payload["logged_at"] = logged_at
         payload["log_sink"] = log_sink
         payload["fallback_reason"] = None if log_sink == "postgres" else self._fallback_reason
         append_jsonl(self._fallback_path, payload)

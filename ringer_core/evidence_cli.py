@@ -35,13 +35,13 @@ def run_evidence_command(
     out = stdout or sys.stdout
     err = stderr or sys.stderr
     paths = args.file or [config.eval.jsonl_path]
-    files: list[tuple[Path, list[dict]]] = []
+    files: list[tuple[Path, list[tuple[int, dict]]]] = []
     for path in paths:
         if not path.is_file():
             print(f"evidence: file not found: {path}", file=err)
             return 2
         try:
-            rows = central_evidence.read_jsonl_rows(path)
+            rows = central_evidence.read_jsonl_numbered(path)
         except (OSError, ValueError) as exc:
             if args.evidence_command == "status":
                 print(f"evidence status: {path}", file=out)
@@ -54,7 +54,8 @@ def run_evidence_command(
     if args.evidence_command == "status":
         totals = Counter()
         latest: list[tuple[datetime, str]] = []
-        for path, rows in files:
+        for path, numbered in files:
+            rows = [row for _, row in numbered]
             print(f"evidence status: {path}", file=out)
             try:
                 confirmed = sum(row.get("log_sink") == "postgres" for row in rows)
@@ -75,7 +76,7 @@ def run_evidence_command(
         if len(files) != len(paths):
             return 2
         print(f"rows: {totals['rows']}", file=out)
-        print(_date_range([row for _, rows in files for row in rows]), file=out)
+        print(_date_range([row for _, numbered in files for _, row in numbered]), file=out)
         print(f"confirmed central (log_sink=postgres): {totals['confirmed']}", file=out)
         print(f"local-only (log_sink=jsonl): {totals['local']}", file=out)
         print(f"latest fallback_reason: {max(latest, default=(None, 'none'))[1]}", file=out)
@@ -93,15 +94,8 @@ def run_evidence_command(
         postgres.source_host if postgres else None
     )
     spec_storage = args.spec_storage or (postgres.spec_storage if postgres else "hash")
-    selected: list[tuple[Path, list[dict], list[dict], list[dict[str, Any]]]] = []
-    for path, rows in files:
-        try:
-            numbered = [(number, row) for number, row in enumerate(rows, 1)
-                        if since is None or _timestamp(row["logged_at"]) >= since]
-        except (KeyError, TypeError, ValueError) as exc:
-            print(f"evidence push: {path}: invalid logged_at: {exc}", file=err)
-            return 2
-        chosen = [row for _, row in numbered]
+    validated: list[tuple[Path, list[dict], list[dict[str, Any]]]] = []
+    for path, numbered in files:
         params = []
         for number, row in numbered:
             try:
@@ -109,16 +103,22 @@ def run_evidence_command(
             except ValueError as exc:
                 print(f"evidence push: {path}:{number}: {exc}", file=err)
                 return 2
-        selected.append((path, rows, chosen, params))
+        validated.append((path, [row for _, row in numbered], params))
+
+    selected: list[tuple[Path, list[dict], list[dict], list[dict[str, Any]]]] = []
+    for path, rows, params in validated:
+        chosen = [(row, param) for row, param in zip(rows, params)
+                  if since is None or _timestamp(row["logged_at"]) >= since]
+        selected.append((path, rows, [row for row, _ in chosen], [param for _, param in chosen]))
 
     if args.dry_run:
-        total_rows = 0
         for path, rows, chosen, params in selected:
             print(f"evidence push: {path}: rows={len(rows)} selected={len(params)}", file=out)
-            total_rows += len(params)
-        print(f"source host: {source_host}", file=out)
-        print(f"spec storage: {spec_storage}", file=out)
         all_rows = [row for _, _, chosen, _ in selected for row in chosen]
+        stamped = sum("source_host" in row for row in all_rows)
+        print(f"stamped rows: {stamped}", file=out)
+        print(f"unstamped rows: {len(all_rows) - stamped} (using host {source_host})", file=out)
+        print(f"spec storage: {spec_storage}", file=out)
         print(f"selected rows: {len(all_rows)}", file=out)
         print(_date_range(all_rows), file=out)
         verdicts = Counter(row.get("verdict", "unknown") for _, _, chosen, _ in selected for row in chosen)
@@ -137,10 +137,11 @@ def run_evidence_command(
     try:
         conn = connect(credentials)
     except RuntimeError as exc:
-        print(f"evidence push: {exc}", file=err)
+        print(central_evidence.scrub(f"evidence push: {exc}", (credentials.password,)), file=err)
         return 2
     except Exception as exc:
-        print(f"evidence push: database connection failed: {exc}", file=err)
+        print(central_evidence.scrub(f"evidence push: database connection failed: {exc}",
+                                    (credentials.password,)), file=err)
         return 3
     inserted_total = present_total = total = 0
     try:
@@ -149,7 +150,8 @@ def run_evidence_command(
             try:
                 result = central_evidence.push_rows(conn, rows, source_host, spec_storage)
             except Exception as exc:
-                print(f"evidence push: {path}: database write failed: {exc}", file=err)
+                print(central_evidence.scrub(f"evidence push: {path}: database write failed: {exc}",
+                                            (credentials.password,)), file=err)
                 return 3
             print(f"evidence push: {path}: inserted {result.inserted}, already present {result.present}", file=out)
             inserted_total += result.inserted

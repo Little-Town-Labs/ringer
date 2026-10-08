@@ -102,7 +102,7 @@ class EvidenceCliTests(unittest.TestCase):
         rc, out, _ = self.invoke(self.args(file=[first], since="2026-10-02T00:00:00Z", dry_run=True,
                                            source_host="override", spec_storage="excerpt"))
         self.assertEqual(0, rc)
-        self.assertIn("source host: override", out)
+        self.assertIn("unstamped rows: 1 (using host override)", out)
         self.assertIn("spec storage: excerpt", out)
         self.assertEqual(before_calls, self.connect.commits)
         rc, _, err = self.invoke(self.args(file=[first], since="not-a-date", dry_run=True))
@@ -188,6 +188,125 @@ class EvidenceCliTests(unittest.TestCase):
             self.assertEqual(0, rc)
             rc = ringer.main(["--config", str(config_path), "evidence", "status"])
             self.assertEqual(0, rc)
+
+    def test_push_preserves_stored_identity_over_override(self):
+        stamped = central_evidence.stamp(row("01"), "origin")
+        path = self.source("stamped.jsonl", [stamped])
+        rc, _, err = self.invoke(self.args(file=[path], source_host="override"))
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.connect.ids, {stamped["attempt_uid"]})
+
+    def test_push_unstamped_rows_use_override(self):
+        unstamped = row("01")
+        path = self.source("unstamped.jsonl", [unstamped])
+        rc, _, err = self.invoke(self.args(file=[path], source_host="override"))
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.connect.ids, {central_evidence.attempt_uid("override", unstamped)})
+
+    def test_dry_run_reports_selected_stamped_and_unstamped_counts(self):
+        path = self.source("mixed.jsonl", [row("01"), central_evidence.stamp(row("02"), "origin"),
+                                           row("03")])
+        rc, out, err = self.invoke(self.args(file=[path], source_host="override", dry_run=True,
+                                             since="2026-10-02"))
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn("stamped rows: 1", out.splitlines())
+        self.assertIn("unstamped rows: 1 (using host override)", out.splitlines())
+        self.assertNotIn("source host:", out)
+
+    def test_dry_run_reports_configured_host_for_unstamped_rows(self):
+        path = self.source("unstamped.jsonl", [row("01")])
+        rc, out, err = self.invoke(self.args(file=[path], dry_run=True))
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn("unstamped rows: 1 (using host host)", out.splitlines())
+
+    def test_dry_run_reports_default_host_for_unstamped_rows(self):
+        self.config.eval.postgres.source_host = None
+        path = self.source("unstamped.jsonl", [row("01")])
+        with mock.patch("ringer_core.central_evidence.socket.gethostname", return_value="machine.example"):
+            rc, out, err = self.invoke(self.args(file=[path], dry_run=True))
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn("unstamped rows: 1 (using host machine)", out.splitlines())
+
+    def test_since_excluded_invalid_row_aborts_at_physical_line(self):
+        path = self.source("excluded.jsonl", [])
+        path.write_text("\n" + json.dumps(row("03")) + "\n\n" +
+                        json.dumps(row("01", duration_ms=2**63)) + "\n")
+        connector = mock.Mock(side_effect=AssertionError("must not connect"))
+        rc, _, err = self.invoke(self.args(file=[path], since="2026-10-02"), connect=connector)
+        self.assertEqual(rc, 2)
+        self.assertIn(f"{path}:4: duration_ms", err)
+        connector.assert_not_called()
+
+    def test_dry_run_validates_since_excluded_rows(self):
+        path = self.source("excluded.jsonl", [])
+        path.write_text("\n\n" + json.dumps(row("01", spec=123)) + "\n")
+        rc, out, err = self.invoke(self.args(file=[path], since="2026-10-02", dry_run=True))
+        self.assertEqual(rc, 2)
+        self.assertIn(f"{path}:3: spec must be text", err)
+        self.assertNotIn("DRY RUN: nothing sent", out)
+
+    def assert_invalid_value(self, field: str, value: object) -> None:
+        path = self.source("invalid.jsonl", [row("01", **{field: value})])
+        for dry_run in (False, True):
+            with self.subTest(dry_run=dry_run):
+                connector = mock.Mock(side_effect=AssertionError("must not connect"))
+                rc, _, err = self.invoke(self.args(file=[path], dry_run=dry_run), connect=connector)
+                self.assertEqual(rc, 2)
+                self.assertIn(f"{path}:1: ", err)
+                self.assertIn(field, err)
+                self.assertNotIn("Traceback", err)
+                connector.assert_not_called()
+
+    def test_push_rejects_bigint_overflow_without_traceback(self):
+        for field in ("duration_ms", "worker_tokens"):
+            for value in (-(2**63) - 1, 2**63):
+                with self.subTest(field=field, value=value):
+                    self.assert_invalid_value(field, value)
+
+    def test_push_rejects_noninteger_values_without_traceback(self):
+        for field in ("duration_ms", "worker_tokens"):
+            for value in (True, False, 1.5, "12"):
+                with self.subTest(field=field, value=value):
+                    self.assert_invalid_value(field, value)
+
+    def test_push_rejects_nontext_values_without_traceback(self):
+        for field in ("pattern", "task_type", "orchestrator", "worker_engine", "model",
+                      "expected_model", "reported_model", "reasoning_effort", "shepherd_model",
+                      "verify_method", "notes", "log_sink", "fallback_reason", "spec"):
+            with self.subTest(field=field):
+                self.assert_invalid_value(field, 123)
+
+    def test_push_rejects_invalid_stored_host_without_traceback(self):
+        for value in (None, "", "  ", 123):
+            with self.subTest(value=value):
+                self.assert_invalid_value("source_host", value)
+
+    def test_push_rejects_mismatched_uid_without_traceback(self):
+        self.assert_invalid_value("attempt_uid", "wrong")
+
+    def test_push_connect_failure_scrubs_password(self):
+        path = self.source("valid.jsonl", [row("01")])
+        connector = mock.Mock(side_effect=OSError("connect topsecret topsecret"))
+        rc, out, err = self.invoke(self.args(file=[path]), connect=connector)
+        self.assertEqual(rc, 3)
+        self.assertIn("database connection failed: connect *** ***", err)
+        self.assertNotIn("topsecret", out + err)
+
+    def test_push_runtime_connect_failure_scrubs_password(self):
+        path = self.source("valid.jsonl", [row("01")])
+        connector = mock.Mock(side_effect=RuntimeError("connect topsecret"))
+        rc, out, err = self.invoke(self.args(file=[path]), connect=connector)
+        self.assertEqual(rc, 2)
+        self.assertIn("connect ***", err)
+        self.assertNotIn("topsecret", out + err)
+
+    def test_push_write_failure_scrubs_password(self):
+        path = self.source("valid.jsonl", [row("01")])
+        with mock.patch.object(central_evidence, "push_rows", side_effect=RuntimeError("write topsecret")):
+            rc, out, err = self.invoke(self.args(file=[path]))
+        self.assertEqual(rc, 3)
+        self.assertIn(f"{path}: database write failed: write ***", err)
+        self.assertNotIn("topsecret", out + err)
 
 
 if __name__ == "__main__":

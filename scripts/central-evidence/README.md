@@ -24,14 +24,20 @@ Start Postgres:
 docker compose --env-file .env up -d
 ```
 
-Apply the schema as the owner. The schema file uses `psql` variables for the writer and reader passwords:
+Apply the schema as the owner. The schema file uses `psql` variables for the writer and reader passwords. Send them through standard input so they never appear in a process's command line, where other local users could read them with `ps`:
 
 ```sh
 set -a
 . ./.env
 set +a
-docker exec -i ringer-postgres psql -U ringer_owner -d ringer -v ON_ERROR_STOP=1 -v writer_pw="$RINGER_WRITER_PW" -v reader_pw="$RINGER_READER_PW" < schema.sql
+{
+  printf '\\set writer_pw %s\n' "'$RINGER_WRITER_PW'"
+  printf '\\set reader_pw %s\n' "'$RINGER_READER_PW'"
+  cat schema.sql
+} | docker exec -i ringer-postgres psql -U ringer_owner -d ringer -v ON_ERROR_STOP=1
 ```
+
+`printf` is a shell builtin, so the values are not passed as arguments to any program. Generated values from `openssl rand -hex 24` contain no quote characters; if you choose your own passwords, do not use a single quote. Do not pass the passwords with `psql -v writer_pw=...`.
 
 Verify the objects and roles:
 
@@ -96,7 +102,26 @@ gunzip -c /path/to/ringer-YYYY-MM-DD.sql.gz | psql -v ON_ERROR_STOP=1 -U ringer_
 
 ## Rotating credentials
 
-Generate new values for the relevant password variables with `openssl rand -hex 24`, update the protected `.env` files used by the service and clients, then apply the schema again to reset the writer and reader role passwords. Restart the service if its owner password changed; update clients with the new role password before removing the old value from their protected env files.
+Generate new values with `openssl rand -hex 24`.
+
+**Writer and reader.** Put the new values in the protected `.env` file, apply the schema again using the command in "Provision" (re-running it is safe and resets those two role passwords), then update each client's protected env file with the new writer password, or each reporting tool with the new reader password.
+
+**Owner.** Changing `RINGER_OWNER_PW` in `.env` and restarting the container does **not** change the stored password: `POSTGRES_PASSWORD` is only read when the data volume is first created. Change it inside the database instead, sending the value on standard input:
+
+```sh
+NEW_OWNER_PW=$(openssl rand -hex 24)
+printf "ALTER ROLE ringer_owner PASSWORD '%s';\n" "$NEW_OWNER_PW" \
+  | docker exec -i ringer-postgres psql -U ringer_owner -d ringer -v ON_ERROR_STOP=1
+```
+
+Then update `RINGER_OWNER_PW` in `.env` to match, and confirm the new password works and the old one is rejected (passwords are checked over TCP, not the container's local socket):
+
+```sh
+export PGPASSWORD="$NEW_OWNER_PW"
+docker exec -e PGPASSWORD ringer-postgres psql -h 127.0.0.1 -U ringer_owner -d ringer -c 'select 1'
+```
+
+Do the same with the old value; it should fail with "password authentication failed". Update clients before you retire an old writer or reader password.
 
 ## Troubleshooting
 

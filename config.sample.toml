@@ -51,7 +51,7 @@ jsonl_path = "~/.ringer/runs.jsonl"
 # [eval.postgres]
 # env_file = "~/.ringer-db.env"
 # spec_storage = "hash"  # or "excerpt": hash stores only a SHA-256 of the prompt excerpt; excerpt stores the up-to-500-character excerpt.
-# source_host = ""  # Defaults to the machine hostname and identifies this machine in the shared database.
+# source_host = "my-laptop"  # Optional. Omit it to use the machine hostname. It identifies this machine in the shared database; set it to keep identity stable if the hostname changes.
 
 [engines.codex]
 # Public default resolves this with shutil.which("codex"). Set an absolute path
